@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Bash(make:*)"],
+    "deny": ["Bash(go:*)", "Bash(gofmt:*)"]
+  }
+}
