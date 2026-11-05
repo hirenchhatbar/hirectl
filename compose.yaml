@@ -5,7 +5,7 @@ services:
       target: dev
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
-      HIRECTL_DIR: /src # dev feeds.json, sources.json stay in the repo, git-ignored
+      HIRECTL_DIR: /src # dev feeds.json, jobs.json stay in the repo, git-ignored
     volumes:
       - .:/src
       - go-cache:/cache

@@ -16,8 +16,8 @@ setup: ## Build the dev image
 build: ## Compile binary to bin/
 	$(GO) env CGO_ENABLED=0 go build -o bin/$(APP) ./cmd/$(APP)
 
-run: ## Run the app
-	$(GO) go run ./cmd/$(APP)
+run: ## Run the app (ARGS="run --feeds a,b --sources greenhouse,lever --delay 1s", "discover --boards greenhouse:stripe", or "list jobs")
+	$(GO) go run ./cmd/$(APP) $(ARGS)
 
 test: ## Run tests
 	$(GO) go test ./...

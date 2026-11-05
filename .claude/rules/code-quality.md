@@ -4,3 +4,4 @@
 - KISS: pick the simplest solution that fully works.
 - YAGNI: build nothing that is not needed now.
 - DRY: keep a single source of truth for every value, rule and piece of logic; reuse it, never copy it.
+- CLI options: always write them with two dashes (`--feeds`) in code, help, docs and examples; never one dash (`-feeds`).

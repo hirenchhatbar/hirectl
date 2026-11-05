@@ -32,12 +32,7 @@ const (
 	barRows = 2 // blank spacer row plus the function-key bar
 )
 
-var (
-	barStyle    = lipgloss.NewStyle().Background(lipgloss.Color("#303030")).Foreground(lipgloss.Color("#9E9E9E"))
-	fkeyStyle   = barStyle.Bold(true).Foreground(lipgloss.Color("#D0D0D0"))
-	activeStyle = barStyle.Bold(true).Foreground(lipgloss.Color("#87AFD7"))
-	logoColors  = []string{"#FF5F87", "#FF87AF", "#D787FF", "#87AFFF", "#5FD7FF"}
-)
+var logoColors = []string{"#FF5F87", "#FF87AF", "#D787FF", "#87AFFF", "#5FD7FF"}
 
 const logo = ` _      _                    _    _
 | |__  (_) _ __   ___   ___ | |_ | |
@@ -138,6 +133,7 @@ func (a app) View() tea.View {
 	v := tea.NewView("")
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
+	v.BackgroundColor, v.ForegroundColor = screenColors()
 	if a.width == 0 {
 		return v // size not known yet
 	}

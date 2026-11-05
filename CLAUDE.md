@@ -10,6 +10,7 @@
 
 @docs/DIRECTORY_STRUCTURE.md
 @docs/TECH_STACK.md
+@docs/CLI.md
 
 ## Failure log
 

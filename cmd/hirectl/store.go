@@ -21,25 +21,25 @@ func dataDir() (string, error) {
 	return filepath.Join(dir, "hirectl"), nil
 }
 
-// loadJSON reads a JSON list file; a missing file means an empty list.
-func loadJSON[T any](path string) ([]T, error) {
+// loadJSON reads a JSON file, such as a list or config.json; a missing file means T's zero value.
+func loadJSON[T any](path string) (T, error) {
+	var v T
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return v, nil
 	}
 	if err != nil {
-		return nil, err
+		return v, err
 	}
-	var items []T
-	if err := json.Unmarshal(b, &items); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if err := json.Unmarshal(b, &v); err != nil {
+		return v, fmt.Errorf("%s: %w", path, err)
 	}
-	return items, nil
+	return v, nil
 }
 
-// saveJSON writes a JSON list file atomically: temp file, then rename.
-func saveJSON[T any](path string, items []T) error {
-	b, err := json.MarshalIndent(items, "", "  ")
+// saveJSON writes a JSON file atomically: temp file, then rename.
+func saveJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}

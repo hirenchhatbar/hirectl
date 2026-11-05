@@ -1,3 +1,5 @@
 bin/
 feeds.json
-sources.json
+jobs.json
+suggestions.json
+config.json

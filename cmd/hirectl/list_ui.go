@@ -28,30 +28,35 @@ const (
 	modeDelete             // right pane asks to confirm a delete
 )
 
-var (
-	paneStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
-	selStyle  = lipgloss.NewStyle().Reverse(true)
-	offStyle  = lipgloss.NewStyle().Faint(true)
-	headStyle = lipgloss.NewStyle().Bold(true)
-	errStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F5F"))
-)
-
-// record is an item a list module manages, such as Feed or Source.
+// record is an item a list module manages, such as Feed.
 type record[T any] interface {
 	label() string    // sidebar and delete-prompt text
+	key() string      // unique among a list's items
 	values() []string // field values in kind.fields order
 	on() bool
 	withOn(bool) T
 }
 
+// pick is a value the form offers as a checkbox for its last field, a comma list.
+type pick struct {
+	value  string // e.g. greenhouse:stripe
+	note   string // column after value, e.g. "4 of 120 jobs"
+	tags   string // last column, e.g. "Go, Java"
+	detail string // shown under the list while this pick is selected
+	on     bool   // checked when the checklist opens on an empty last field
+}
+
 // kind describes one record type to the list module.
 type kind[T record[T]] struct {
-	name   string // "Feed"
-	file   string // JSON file in dataDir
-	fields []string
-	hints  []string                  // input placeholders, by field
-	blank  T                         // defaults for a new item
-	parse  func([]string) (T, error) // form values to a validated item
+	name       string // "Feed"
+	file       string // JSON file in dataDir
+	fields     []string
+	hints      []string                        // input placeholders, by field
+	blank      T                               // defaults for a new item
+	parse      func([]string) (T, error)       // form values to a validated item
+	picks      func([]string) (string, []pick) // optional: checklist heading and picks for the last field, from the form values
+	derive     func([]string)                  // optional: sets form fields computed from others, e.g. feed ID from title
+	deriveHint string                          // ctrl+g key hint for derive, e.g. "ID from title"
 }
 
 // listModel is a module: items in a sidebar, right pane for logo/view/form/delete.
@@ -64,7 +69,10 @@ type listModel[T record[T]] struct {
 	mode          mode
 	editing       int // item index being edited, -1 for a new item
 	inputs        []textinput.Model
-	focus         int
+	focus         int    // input index, or len(inputs) for the picks checklist
+	picks         []pick // loaded when the checklist gets focus
+	picksHead     string // heading of picks
+	pickAt        int    // selected pick
 	status        string // error shown in the bottom bar until the next key
 	width, height int
 }
@@ -103,7 +111,7 @@ func (m *listModel[T]) move(to int) {
 }
 
 func (m *listModel[T]) openForm(index int) tea.Cmd {
-	m.mode, m.editing, m.focus = modeForm, index, 0
+	m.mode, m.editing, m.focus, m.picks = modeForm, index, 0, nil
 	it := m.kind.blank
 	if index >= 0 {
 		it = m.items[index]
@@ -115,21 +123,76 @@ func (m *listModel[T]) openForm(index int) tea.Cmd {
 	return m.inputs[0].Focus()
 }
 
+// stepFocus moves focus d stops on, wrapping around. The picks checklist, if kind has one, comes right
+// before the last field it fills, so tabbing to that field opens it first.
+func (m *listModel[T]) stepFocus(d int) tea.Cmd {
+	var stops []int
+	for i := range m.inputs {
+		if i == len(m.inputs)-1 && m.kind.picks != nil {
+			stops = append(stops, len(m.inputs))
+		}
+		stops = append(stops, i)
+	}
+	at := slices.Index(stops, m.focus)
+	return m.focusField(stops[(at+d+len(stops))%len(stops)])
+}
+
+// focusField focuses input i, or the picks checklist for i == len(inputs).
 func (m *listModel[T]) focusField(i int) tea.Cmd {
-	m.inputs[m.focus].Blur()
-	m.focus = (i + len(m.inputs)) % len(m.inputs)
+	if !m.onPicks() {
+		m.inputs[m.focus].Blur()
+	}
+	m.focus = i
+	if m.onPicks() { // reload, as the other fields may have changed
+		m.picksHead, m.picks = m.kind.picks(m.formValues())
+		m.pickAt = 0
+		if last := &m.inputs[len(m.inputs)-1]; last.Value() == "" {
+			var on []string
+			for _, p := range m.picks {
+				if p.on {
+					on = append(on, p.value)
+				}
+			}
+			last.SetValue(strings.Join(on, ", "))
+		}
+		return nil
+	}
 	return m.inputs[m.focus].Focus()
 }
 
-func (m *listModel[T]) saveForm() {
+func (m listModel[T]) onPicks() bool { return m.focus == len(m.inputs) }
+
+// togglePick adds v to the last field's comma list, or removes it when there.
+func (m *listModel[T]) togglePick(v string) {
+	last := &m.inputs[len(m.inputs)-1]
+	vals := parseList(last.Value())
+	if i := slices.Index(vals, v); i >= 0 {
+		vals = slices.Delete(vals, i, i+1)
+	} else {
+		vals = append(vals, v)
+	}
+	last.SetValue(strings.Join(vals, ", "))
+}
+
+func (m listModel[T]) formValues() []string {
 	var vals []string
 	for _, in := range m.inputs {
 		vals = append(vals, in.Value())
 	}
-	it, err := m.kind.parse(vals)
+	return vals
+}
+
+func (m *listModel[T]) saveForm() {
+	it, err := m.kind.parse(m.formValues())
 	if err != nil {
 		m.status = err.Error()
 		return
+	}
+	for i, o := range m.items {
+		if i != m.editing && o.key() == it.key() {
+			m.status = fmt.Sprintf("%s %q already exists", strings.ToLower(m.kind.name), it.key())
+			return
+		}
 	}
 	items := slices.Clone(m.items)
 	if m.editing >= 0 {
@@ -182,7 +245,7 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.mode == modeForm { // cursor blink and other input messages
+	if m.mode == modeForm && !m.onPicks() { // cursor blink and other input messages
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd
@@ -239,14 +302,67 @@ func (m listModel[T]) updateForm(msg tea.KeyPressMsg) (module, tea.Cmd) {
 	case "enter", "ctrl+s":
 		m.saveForm()
 		return m, nil
-	case "tab", "down":
-		return m, m.focusField(m.focus + 1)
-	case "shift+tab", "up":
-		return m, m.focusField(m.focus - 1)
+	case "ctrl+g":
+		if m.kind.derive != nil {
+			v := m.formValues()
+			m.kind.derive(v)
+			m.setForm(v)
+		}
+		return m, nil
+	case "tab":
+		return m, m.stepFocus(1)
+	case "shift+tab":
+		return m, m.stepFocus(-1)
 	}
+	if m.onPicks() {
+		switch msg.String() {
+		case "j", "down":
+			m.pickAt = max(min(m.pickAt+1, len(m.picks)-1), 0)
+		case "k", "up":
+			m.pickAt = max(m.pickAt-1, 0)
+		case "space":
+			if len(m.picks) > 0 {
+				m.togglePick(m.picks[m.pickAt].value)
+			}
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "down":
+		return m, m.stepFocus(1)
+	case "up":
+		return m, m.stepFocus(-1)
+	}
+	old := m.formValues()
 	var cmd tea.Cmd
 	m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
+	m.follow(old)
 	return m, cmd
+}
+
+// follow re-derives a new item's derived fields after a keystroke, while they still hold what old derives to
+// and the field typed in is not one of them; editing keeps them, as files may refer to them (feed ID).
+func (m *listModel[T]) follow(old []string) {
+	if m.kind.derive == nil || m.editing >= 0 {
+		return
+	}
+	was := slices.Clone(old)
+	m.kind.derive(was)
+	cur := m.formValues()
+	typed := cur[m.focus]
+	m.kind.derive(cur)
+	if slices.Equal(was, old) && cur[m.focus] == typed {
+		m.setForm(cur)
+	}
+}
+
+// setForm puts v into the form's inputs, leaving unchanged ones (and their cursors) alone.
+func (m *listModel[T]) setForm(v []string) {
+	for i := range m.inputs {
+		if v[i] != m.inputs[i].Value() {
+			m.inputs[i].SetValue(v[i])
+		}
+	}
 }
 
 func (m listModel[T]) click(msg tea.MouseClickMsg) (module, tea.Cmd) {
@@ -312,8 +428,18 @@ func (m listModel[T]) View() string {
 		for _, in := range m.inputs {
 			lines = append(lines, in.View())
 		}
+		if m.kind.picks != nil {
+			lines = append(lines, "")
+			lines = append(lines, m.picksView(inner, h-2-len(lines))...)
+		}
 		body = strings.Join(lines, "\n")
 		keys = "tab/↑↓ field  enter/ctrl+s save  esc cancel"
+		if m.onPicks() {
+			keys = "j/k move  space toggle  tab field  enter/ctrl+s save  esc cancel"
+		}
+		if m.kind.derive != nil {
+			keys = "ctrl+g " + m.kind.deriveHint + "  " + keys
+		}
 	case modeView:
 		it := m.items[m.cursor]
 		status := "off"
@@ -342,4 +468,38 @@ func (m listModel[T]) View() string {
 		bar = " " + errStyle.Render(m.status)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n" + ansi.Truncate(bar, m.width, "…")
+}
+
+// picksView renders the picks checklist in at most rows lines of width: heading, aligned rows scrolled to
+// keep the selection in view, then the selected pick's detail.
+func (m listModel[T]) picksView(width, rows int) []string {
+	if !m.onPicks() {
+		return []string{headStyle.Render("Suggested boards") + offStyle.Render("  tab from Location to review")}
+	}
+	lines := []string{ansi.Truncate(headStyle.Render(m.picksHead), width, "…")}
+	if len(m.picks) == 0 {
+		return append(lines, offStyle.Render("No discovered boards. Run hirectl discover."))
+	}
+	valW, noteW := 0, 0
+	for _, p := range m.picks {
+		valW, noteW = max(valW, ansi.StringWidth(p.value)), max(noteW, ansi.StringWidth(p.note))
+	}
+	rows = max(rows-3, 1) // heading, blank, detail
+	chosen := parseList(m.inputs[len(m.inputs)-1].Value())
+	start := max(m.pickAt-rows+1, 0)
+	for i := start; i < len(m.picks) && i < start+rows; i++ {
+		p := m.picks[i]
+		box := "[ ] "
+		if slices.Contains(chosen, p.value) {
+			box = "[x] "
+		}
+		row := fmt.Sprintf("%s%-*s  %*s  ", box, valW, p.value, noteW, p.note)
+		if i == m.pickAt {
+			row = selStyle.Render(ansi.Truncate(row+p.tags, width, "…"))
+		} else {
+			row = ansi.Truncate(row+offStyle.Render(p.tags), width, "…")
+		}
+		lines = append(lines, row)
+	}
+	return append(lines, "", offStyle.Render(ansi.Truncate(m.picks[m.pickAt].detail, width, "…")))
 }
