@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	integrations["workday"] = &integration{fetch: fetchWorkday, hosts: []string{"*.myworkdayjobs.com"}, company: workdayCompany}
+	integrations["workday"] = &integration{fetch: fetchWorkday, hosts: []string{"*.myworkdayjobs.com"}, company: workdayCompany, describe: describeWorkday}
 }
 
 // A Workday board is <tenant>.<wdN>/<site>, as in workday:nvidia.wd5/nvidiaexternalcareersite,
@@ -36,16 +36,53 @@ func workdayCompany(host, path string) string {
 	return host + "/" + site
 }
 
+// workdayJob is one posting as Workday's API gives it.
+type workdayJob struct {
+	Info struct {
+		Title               string   `json:"title"`
+		Location            string   `json:"location"`
+		AdditionalLocations []string `json:"additionalLocations"`
+		ExternalURL         string   `json:"externalUrl"`
+		JobDescription      string   `json:"jobDescription"` // HTML
+		StartDate           string   `json:"startDate"`      // posting date, e.g. 2026-11-06
+	} `json:"jobPostingInfo"`
+}
+
+// workdayBase is the API URL of a Workday board <tenant>.<wdN>/<site>.
+func workdayBase(company string) (string, error) {
+	host, site, _ := strings.Cut(company, "/")
+	m := workdayHostRe.FindStringSubmatch(host)
+	if m == nil || site == "" { // as a bare --boards name
+		return "", fmt.Errorf("%q, want <tenant>.<wdN>/<site>: %w", company, errNotFound)
+	}
+	return "https://" + host + ".myworkdayjobs.com/wday/cxs/" + m[1] + "/" + site, nil
+}
+
+// describeWorkday reads one posting's description: its API path is its page URL's /job/... part.
+func describeWorkday(ctx context.Context, client *http.Client, company, url string) (string, error) {
+	base, err := workdayBase(company)
+	if err != nil {
+		return "", err
+	}
+	_, path, ok := strings.Cut(url, "/job/")
+	if !ok {
+		return "", fmt.Errorf("%q is not a Workday job page", url)
+	}
+	var d workdayJob
+	if err := getJSON(ctx, client, base+"/job/"+path, &d); err != nil {
+		return "", err
+	}
+	return d.Info.JobDescription, nil
+}
+
 // fetchWorkday reads a public Workday career site through the JSON API its pages use: a POST per
 // workdayPage postings, then a GET per posting, as only that holds its locations and description.
 // So a board of n jobs takes n + n/20 requests, sent without pacing.
 func fetchWorkday(ctx context.Context, client *http.Client, company string, text bool) ([]Job, error) {
-	host, site, _ := strings.Cut(company, "/")
-	m := workdayHostRe.FindStringSubmatch(host)
-	if m == nil || site == "" { // as a bare --boards name
-		return nil, fmt.Errorf("%q, want <tenant>.<wdN>/<site>: %w", company, errNotFound)
+	base, err := workdayBase(company)
+	if err != nil {
+		return nil, err
 	}
-	base := "https://" + host + ".myworkdayjobs.com/wday/cxs/" + m[1] + "/" + site
 	var jobs []Job
 	total := 0
 	for offset := 0; ; offset += workdayPage {
@@ -65,16 +102,7 @@ func fetchWorkday(ctx context.Context, client *http.Client, company string, text
 			total = page.Total
 		}
 		for _, p := range page.JobPostings {
-			var d struct {
-				Info struct {
-					Title               string   `json:"title"`
-					Location            string   `json:"location"`
-					AdditionalLocations []string `json:"additionalLocations"`
-					ExternalURL         string   `json:"externalUrl"`
-					JobDescription      string   `json:"jobDescription"` // HTML
-					StartDate           string   `json:"startDate"`      // posting date, e.g. 2026-11-06
-				} `json:"jobPostingInfo"`
-			}
+			var d workdayJob
 			err := getJSON(ctx, client, base+p.ExternalPath, &d)
 			if errors.Is(err, errNotFound) { // closed since listed
 				continue

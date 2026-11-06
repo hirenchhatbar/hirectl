@@ -91,8 +91,8 @@ e.g. --boards "greenhouse:stripe,Acme Corp" tries greenhouse:stripe, and acmecor
 		boards = st.Todo
 		fmt.Fprintf(errOut, "hirectl: resuming the interrupted discover, %d boards left\n", len(boards))
 	case len(given) == 0:
-		if boards, err = crawlBoards(ctx, &http.Client{Timeout: 10 * time.Minute}, sources, prog); err != nil {
-			return fmt.Errorf("common crawl: %w", err)
+		if boards, err = onlineBoards(ctx, &http.Client{Timeout: 10 * time.Minute}, sources, prog); err != nil {
+			return err
 		}
 		for _, j := range stored {
 			if name, _, _ := splitBoard(j.Board); slices.Contains(sources, name) {
@@ -301,6 +301,35 @@ func suggest(catalog []Job, f Feed, n int) (string, []pick) {
 		what += " in " + strings.Join(f.Locations, " or ")
 	}
 	return fmt.Sprintf("Sources for %s: %d boards match, run fetches the top %d on the checked sources (none checked: all)", what, len(match), n), picks
+}
+
+// onlineBoards lists the boards of sources, sorted: an integration's own list when it has one, else
+// those in the latest Common Crawl.
+func onlineBoards(ctx context.Context, client *http.Client, sources []string, prog *progress) ([]string, error) {
+	var boards, crawled []string
+	for _, s := range sources {
+		in := integrations[s]
+		if in.boards == nil {
+			crawled = append(crawled, s)
+			continue
+		}
+		names, err := in.boards(ctx, client)
+		if err != nil {
+			return nil, fmt.Errorf("%s boards: %w", s, err)
+		}
+		for _, n := range names {
+			boards = append(boards, s+":"+n)
+		}
+	}
+	if len(crawled) > 0 {
+		cb, err := crawlBoards(ctx, client, crawled, prog)
+		if err != nil {
+			return nil, fmt.Errorf("common crawl: %w", err)
+		}
+		boards = append(boards, cb...)
+	}
+	slices.Sort(boards)
+	return boards, nil
 }
 
 // crawlBoards lists the boards of sources whose pages are in the latest Common Crawl. It skips the

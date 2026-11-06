@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	version = "0.0.2"
+	version = "0.0.3"
 )
 
 const usage = `Usage:
@@ -115,6 +115,23 @@ func run() error {
 		}
 		views[f.ID] = v
 		return saveJSON(viewsPath, views)
+	}
+	likesPath := filepath.Join(dir, likesFile)
+	fk.likes = func() (map[string]string, error) { return loadJSON[map[string]string](likesPath) }
+	fk.saveLike = func(url, thumb string) error {
+		likes, err := loadJSON[map[string]string](likesPath) // reread, so another hirectl's thumbs stay
+		if err != nil {
+			return err
+		}
+		if likes == nil {
+			likes = map[string]string{}
+		}
+		if thumb == "" {
+			delete(likes, url)
+		} else {
+			likes[url] = thumb
+		}
+		return saveJSON(likesPath, likes)
 	}
 	feeds, err := newSlot("f2", "Feeds", dir, fk)
 	if err != nil {

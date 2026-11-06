@@ -37,7 +37,7 @@ func TestListCmd(t *testing.T) {
 		{[]string{"--since", "7d", "jobs"}, dev + recent},
 		{[]string{"jobs", "--since", "72h", "--sort", "posted"}, recent + dev},
 		{[]string{"boards"}, "greenhouse:a\t1 jobs\t\nlever:a\t1 jobs\t\nlever:b\t2 jobs\tGo,PHP\n"},
-		{[]string{"sources"}, "ashby\t0 boards\nbreezy\t0 boards\ngem\t0 boards\ngreenhouse\t1 boards\nlever\t2 boards\nlever-eu\t0 boards\npersonio\t0 boards\nrecruitee\t0 boards\nrippling\t0 boards\nsmartrecruiters\t0 boards\nworkable\t0 boards\nworkday\t0 boards\n"},
+		{[]string{"sources"}, "ashby\t0 boards\nbreezy\t0 boards\ngem\t0 boards\ngreenhouse\t1 boards\nhirist\t0 boards\nlever\t2 boards\nlever-eu\t0 boards\npersonio\t0 boards\nrecruitee\t0 boards\nrippling\t0 boards\nsmartrecruiters\t0 boards\nworkable\t0 boards\nworkday\t0 boards\n"},
 	} {
 		var out strings.Builder
 		if err := listCmd(context.Background(), dir, tc.args, &out, io.Discard); err != nil || out.String() != tc.want {

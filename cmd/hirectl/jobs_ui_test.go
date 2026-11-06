@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -140,5 +142,89 @@ func TestJobsPane(t *testing.T) {
 	press("c") // clear: search, filters and sort reset, and saved
 	if titles() != "PHP Engineer, Go Developer, Golang Lead" || !reflect.DeepEqual(saved["go"], jobView{Sources: []string{}, Sort: "newest"}) {
 		t.Fatalf("after c: jobs %q, saved %+v", titles(), saved["go"])
+	}
+}
+
+func TestCompany(t *testing.T) {
+	for board, want := range map[string]string{"greenhouse:stripe": "stripe", "workday:nvidia.wd5/nvidiaexternalcareersite": "nvidia", "lever-eu:a.b": "a.b"} {
+		if got := company(board); got != want {
+			t.Errorf("company(%q) = %q, want %q", board, got, want)
+		}
+	}
+}
+
+func TestPlainText(t *testing.T) {
+	for in, want := range map[string]string{
+		"<h2>About</h2><p>We write <b>Go</b> &amp; Rust.</p><ul><li>One</li><li>Two</li></ul>": "About\n\nWe write Go & Rust.\n\n• One\n• Two",
+		"Plain text, <5 years.\n\n\n\nNext":                                                    "Plain text, <5 years.\n\nNext",
+	} {
+		if got := plainText(in); got != want {
+			t.Errorf("plainText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestJobsPaneThumbsAndSnapshot(t *testing.T) {
+	jobs := []Job{
+		{Board: "lever:a", Title: "Go Developer", URL: "https://a/1"},
+		{Board: "lever:a", Title: "Rust Developer", URL: "https://a/2"},
+	}
+	k := feedKind
+	k.jobs = func(Feed) ([]Job, jobView, error) { return jobs, jobView{}, nil }
+	likes := map[string]string{}
+	k.likes = func() (map[string]string, error) { return maps.Clone(likes), nil }
+	k.saveLike = func(url, thumb string) error {
+		if thumb == "" {
+			delete(likes, url)
+		} else {
+			likes[url] = thumb
+		}
+		return nil
+	}
+	defer func(f func(context.Context, Job) (map[string]string, error)) { describe = f }(describe)
+	describe = func(context.Context, Job) (map[string]string, error) { return nil, nil } // the test sends descsMsg itself
+	var m module = newListModel(k, "", []Feed{{ID: "go", Title: "Go", Enabled: true}})
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	press := func(s string) tea.Cmd {
+		msg := tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
+		if s == "esc" {
+			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		}
+		var cmd tea.Cmd
+		m, cmd = m.Update(msg)
+		return cmd
+	}
+	pane := func() jobsPane { return m.(listModel[Feed]).jobs }
+
+	press("+") // Go Developer liked
+	press("j")
+	press("-") // Rust Developer disliked
+	press("-") // and cleared again
+	if !maps.Equal(likes, map[string]string{"https://a/1": "up"}) {
+		t.Fatalf("likes %v, want Go Developer up", likes)
+	}
+	press("t") // liked only
+	if got := pane().shown; len(got) != 1 || got[0].Title != "Go Developer" {
+		t.Fatalf("thumb filter up shows %v", got)
+	}
+	if body, _ := pane().view(); !strings.Contains(body, "👍  Go Developer") {
+		t.Fatalf("no thumb before the title:\n%s", body)
+	}
+
+	cmd := press(" ")
+	if p := pane(); p.snap != "https://a/1" || p.loading != "https://a/1" || cmd == nil {
+		t.Fatalf("space: snap %q, loading %q; want the job fetching", p.snap, p.loading)
+	}
+	m, _ = m.Update(descsMsg{"https://a/1", map[string]string{"https://a/1": "<p>Write Go.</p>", "https://a/2": ""}, nil})
+	if body, keys := pane().view(); !strings.Contains(body, "Write Go.") || !strings.Contains(keys, "close") {
+		t.Fatalf("snapshot lacks the description:\n%s", body)
+	}
+	press("esc")
+	if lm := m.(listModel[Feed]); lm.mode != modeJobs || lm.jobs.snap != "" {
+		t.Fatalf("esc in snapshot: mode %v, snap %q; want the list back", lm.mode, lm.jobs.snap)
+	}
+	if press(" ") != nil { // cached
+		t.Fatalf("reopened snapshot fetches again")
 	}
 }

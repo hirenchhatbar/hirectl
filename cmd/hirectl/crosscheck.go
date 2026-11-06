@@ -13,7 +13,7 @@ import (
 )
 
 // crossCheckCmd is `hirectl cross-check [--sources s,t]`: per source, compare the boards stored in
-// suggestions.json with the boards in the latest Common Crawl, printing
+// suggestions.json with the boards online (see onlineBoards), printing
 // `source  <n> stored  <m> online  <k> not stored`.
 func crossCheckCmd(ctx context.Context, dir string, args []string, out, errOut io.Writer) error {
 	fs := newFlagSet("cross-check")
@@ -37,9 +37,9 @@ func crossCheckCmd(ctx context.Context, dir string, args []string, out, errOut i
 	}
 	prog := newProgress(out, errOut)
 	defer prog.close()
-	online, err := crawlBoards(ctx, &http.Client{Timeout: 10 * time.Minute}, sources, prog)
+	online, err := onlineBoards(ctx, &http.Client{Timeout: 10 * time.Minute}, sources, prog)
 	if err != nil {
-		return fmt.Errorf("common crawl: %w", err)
+		return err
 	}
 	printCrossCheck(prog, sources, stored, online)
 	return nil

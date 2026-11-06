@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,6 +68,18 @@ func TestCrawlBoards(t *testing.T) {
 	got, err := crawlBoards(context.Background(), client, []string{"lever", "recruitee"}, newProgress(io.Discard, io.Discard))
 	if want := []string{"lever:acme", "lever:beta", "recruitee:delta"}; err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, %v; want %v", got, err, want)
+	}
+}
+
+func TestOnlineBoardsListed(t *testing.T) {
+	integrations["fa"] = &integration{boards: func(context.Context, *http.Client) ([]string, error) { return []string{"y", "x"}, nil }}
+	defer delete(integrations, "fa")
+	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("unexpected GET %s: listed boards need no Common Crawl", r.URL)
+		return nil, errors.New("no network")
+	})}
+	if got, err := onlineBoards(context.Background(), client, []string{"fa"}, newProgress(io.Discard, io.Discard)); err != nil || !slices.Equal(got, []string{"fa:x", "fa:y"}) {
+		t.Fatalf("got %v, %v; want fa:x, fa:y", got, err)
 	}
 }
 

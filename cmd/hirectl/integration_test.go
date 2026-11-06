@@ -235,3 +235,51 @@ func TestFetchWorkdayMissing(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchHirist(t *testing.T) {
+	answers := map[string]string{
+		"https://www.hirist.tech/c/backend-development-jobs":              `<script>{"slug":"backend-development-jobs","categoryId":"1"}</script>`,
+		"https://gladiator.hirist.tech/job/category/?categoryId=1&page=0": `{"data":[{"id":1,"title":"Go Dev","createdTimeMs":1793690256693,"min":5,"locations":[{"name":"Remote"},{"name":"Bangalore"}],"tags":[{"name":"Golang"},{"name":"AWS"}]}],"hasMore":true}`,
+		"https://gladiator.hirist.tech/job/category/?categoryId=1&page=1": `{"data":[{"id":2,"title":"Ops"}],"hasMore":false}`,
+		"https://www.hirist.tech/c/stripe-jobs":                           `<script>{"slug":"stripe-jobs","categoryId":""}</script>`,
+	}
+	c := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		body, ok := answers[r.URL.String()]
+		if !ok {
+			t.Fatalf("unexpected GET %s", r.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	got, err := fetchHirist(context.Background(), c, "backend-development", true)
+	want := []Job{
+		{Title: "Go Dev", Location: "Remote; Bangalore", URL: "https://www.hirist.tech/j/go-dev-1", Posted: time.UnixMilli(1793690256693).UTC(), text: "5 years of experience.\nGolang, AWS"},
+		{Title: "Ops", URL: "https://www.hirist.tech/j/ops-2", text: "0 years of experience.\n"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, %v; want %+v", got, err, want)
+	}
+	if level(got[0]) != "5-7" || !reflect.DeepEqual(techIn(got[0].Title+"\n"+got[0].text), []string{"Go", "AWS"}) {
+		t.Errorf("level %q, techs %v; want 5-7, [Go AWS]", level(got[0]), techIn(got[0].Title+"\n"+got[0].text))
+	}
+	for _, category := range []string{"stripe", "workday:a.wd5/b"} {
+		if _, err := fetchHirist(context.Background(), c, category, true); !errors.Is(err, errNotFound) {
+			t.Errorf("%s: got %v, want errNotFound", category, err)
+		}
+	}
+}
+
+func TestHiristBoards(t *testing.T) {
+	c := fakeClient(t, "https://www.hirist.tech/new_sitemap-c-1.xml",
+		`<urlset><url><loc>https://www.hirist.tech/c/backend-development-jobs</loc></url><url><loc>https://www.hirist.tech/c/ai-ml-jobs</loc></url></urlset>`)
+	if got, err := hiristBoards(context.Background(), c); err != nil || !reflect.DeepEqual(got, []string{"backend-development", "ai-ml"}) {
+		t.Fatalf("got %v, %v; want backend-development, ai-ml", got, err)
+	}
+}
+
+func TestDescribeWorkday(t *testing.T) {
+	c := fakeClient(t, "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/careers/job/Berlin/Go-Dev_R1", `{"jobPostingInfo":{"jobDescription":"<p>Go</p>"}}`)
+	got, err := describeWorkday(context.Background(), c, "acme.wd5/careers", "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Berlin/Go-Dev_R1")
+	if err != nil || got != "<p>Go</p>" {
+		t.Fatalf("got %q, %v; want <p>Go</p>", got, err)
+	}
+}

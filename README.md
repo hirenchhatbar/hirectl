@@ -1,6 +1,6 @@
 # hirectl
 
-Terminal job-feed tracker. Define feeds (skills, locations, sources), discover job boards via Common Crawl, fetch matching jobs from Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Rippling, Recruitee, Personio, Gem, Breezy HR and Workday, and browse them in a TUI with search, filters, score and level.
+Terminal job-feed tracker. Define feeds (skills, locations, sources), discover job boards via Common Crawl, fetch matching jobs from Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Rippling, Recruitee, Personio, Gem, Breezy HR, Workday and hirist.tech (by job category), and browse them in a TUI with search, filters, score and level, a job snapshot (description) popup and 👍/👎 ratings.
 
 ## Usage
 
@@ -9,7 +9,7 @@ hirectl                                                    # TUI: feeds, jobs, c
 hirectl discover [--boards a,b] [--sources s,t] [--delay 1s]  # find boards, store their jobs in suggestions.json
 hirectl run      [--feeds a,b]  [--sources s,t] [--delay 1s]  # fetch each feed's top boards, store matching jobs
 hirectl list     <feeds|jobs|boards|sources> [--since 7d] [--sort posted]
-hirectl cross-check [--sources s,t]                        # stored boards vs latest Common Crawl
+hirectl cross-check [--sources s,t]                        # stored boards vs those online (latest Common Crawl)
 ```
 
 Typical flow: add feeds in the TUI, run `hirectl discover` (rarely) and `hirectl run` (often) from cron, read jobs in the TUI or with `hirectl list jobs`.

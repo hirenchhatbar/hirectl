@@ -53,6 +53,12 @@ type integration struct {
 	hosts []string
 	// company, when set, returns the company of a crawled page on hosts, or "" for none, in place of the above.
 	company func(host, path string) string
+	// boards, when set, lists the integration's boards from the site itself, in place of Common Crawl:
+	// for a job site whose boards are not companies, such as hirist's categories.
+	boards func(ctx context.Context, client *http.Client) ([]string, error)
+	// describe, when set, returns one job's description by its URL, for the jobs pane's snapshot, in place
+	// of fetching the whole board: for a site that needs a request per job anyway, as Workday does.
+	describe func(ctx context.Context, client *http.Client, company, url string) (string, error)
 }
 
 // integrations maps a board prefix, as in "greenhouse:stripe", to its integration.

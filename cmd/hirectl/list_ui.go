@@ -55,15 +55,17 @@ type kind[T record[T]] struct {
 	name       string // "Feed"
 	file       string // JSON file in dataDir
 	fields     []string
-	hints      []string                        // input placeholders, by field
-	blank      func() T                        // defaults for a new item
-	parse      func([]string) (T, error)       // form values to a validated item
-	picks      func([]string) (string, []pick) // optional: checklist heading and picks for the last field, from the form values
-	derive     func([]string)                  // optional: sets form fields computed from others, e.g. feed ID from title
-	deriveHint string                          // ctrl+g key hint for derive, e.g. "ID from title"
-	jobs       func(T) ([]Job, jobView, error) // optional: an item's jobs, listed by o in the right pane, and its saved jobView
-	saveView   func(T, jobView) error          // optional: saves an item's jobView as the jobs pane changes it
-	reload     func() error                    // optional: rereads other data on refresh, e.g. suggestions.json for picks
+	hints      []string                          // input placeholders, by field
+	blank      func() T                          // defaults for a new item
+	parse      func([]string) (T, error)         // form values to a validated item
+	picks      func([]string) (string, []pick)   // optional: checklist heading and picks for the last field, from the form values
+	derive     func([]string)                    // optional: sets form fields computed from others, e.g. feed ID from title
+	deriveHint string                            // ctrl+g key hint for derive, e.g. "ID from title"
+	jobs       func(T) ([]Job, jobView, error)   // optional: an item's jobs, listed by o in the right pane, and its saved jobView
+	saveView   func(T, jobView) error            // optional: saves an item's jobView as the jobs pane changes it
+	likes      func() (map[string]string, error) // optional: job thumbs by URL, shown in the jobs pane
+	saveLike   func(url, thumb string) error     // optional: saves a job's thumb, "" to clear it
+	reload     func() error                      // optional: rereads other data on refresh, e.g. suggestions.json for picks
 }
 
 // listModel is a module: items in a sidebar, right pane for logo/view/form/delete.
@@ -138,9 +140,10 @@ func (m *listModel[T]) refresh() {
 	case i < 0:
 		m.mode = modeLogo // the shown item is gone
 	case m.mode == modeJobs:
-		at := m.jobs.cursor
+		at, descs := m.jobs.cursor, m.jobs.descs
 		m.openJobs()
 		m.jobs.move(at)
+		m.jobs.descs = descs
 	}
 }
 
@@ -151,9 +154,17 @@ func (m *listModel[T]) openJobs() {
 		m.status = err.Error()
 		return
 	}
+	var likes map[string]string
+	if m.kind.likes != nil {
+		if likes, err = m.kind.likes(); err != nil {
+			m.status = err.Error()
+			return
+		}
+	}
 	m.counts[m.items[m.cursor].key()] = len(jobs)
 	w, h := m.jobsSize()
-	m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, w, h), modeJobs
+	m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, likes, w, h), modeJobs
+	m.jobs.rate = m.kind.saveLike
 }
 
 // jobsSize is the width and height inside the right pane's border, where the jobs pane goes.
