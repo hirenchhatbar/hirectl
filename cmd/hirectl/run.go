@@ -119,7 +119,8 @@ e.g. --feeds go-remote,backend-nl (default: all enabled)`)
 	if err != nil {
 		return err
 	}
-	tasks, err := plan(feeds, catalog, cfg.boards(), parseList(*feedsFlag), parseList(*sourcesFlag))
+	sources := parseList(*sourcesFlag)
+	tasks, err := plan(feeds, catalog, cfg.boards(), parseList(*feedsFlag), sources)
 	if err != nil {
 		return err
 	}
@@ -136,7 +137,6 @@ e.g. --feeds go-remote,backend-nl (default: all enabled)`)
 	var errs []error
 	for _, t := range tasks {
 		var jobs []Job
-		done := map[string]bool{} // boards fetched for t
 		for _, b := range t.boards {
 			bj, ok := fetched[b]
 			if !ok {
@@ -151,12 +151,15 @@ e.g. --feeds go-remote,backend-nl (default: all enabled)`)
 				fetched[b] = bj
 			}
 			prog.step()
-			if !failed[b] { // a failed board keeps its jobs in the file
-				done[b] = true
+			if !failed[b] {
 				jobs = append(jobs, bj...)
 			}
 		}
-		if err := t.store(dir, done, jobs, prog); err != nil {
+		keep := func(b string) bool { // a failed board, or one off the selected sources, keeps its jobs in the file
+			name, _, _ := splitBoard(b)
+			return failed[b] || len(sources) > 0 && !slices.Contains(sources, name)
+		}
+		if err := t.store(dir, keep, jobs, prog); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -166,9 +169,9 @@ e.g. --feeds go-remote,backend-nl (default: all enabled)`)
 	return errors.Join(append(errs, prune(dir, feeds))...)
 }
 
-// store replaces the jobs of the done boards in t's feed file with those in jobs matching the feed,
-// keeping the jobs of its other boards, and prints each job whose URL was not in the file.
-func (t task) store(dir string, done map[string]bool, jobs []Job, out io.Writer) error {
+// store replaces t's feed file with the jobs in jobs matching the feed, plus the file's jobs of boards
+// keep reports, and prints each job whose URL was not in the file.
+func (t task) store(dir string, keep func(board string) bool, jobs []Job, out io.Writer) error {
 	path := jobFile(dir, t.feed.ID)
 	old, err := loadJSON[[]Job](path)
 	if err != nil {
@@ -179,7 +182,7 @@ func (t task) store(dir string, done map[string]bool, jobs []Job, out io.Writer)
 	kept := []Job{}
 	for _, j := range old {
 		seen[j.URL] = true
-		if !done[j.Board] && !added[j.URL] {
+		if keep(j.Board) && !added[j.URL] {
 			added[j.URL] = true
 			kept = append(kept, j)
 		}

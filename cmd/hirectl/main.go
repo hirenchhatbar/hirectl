@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -72,7 +73,8 @@ func run() error {
 		defer stop()
 		return cmds[os.Args[1]](ctx, dir, os.Args[2:], os.Stdout, os.Stderr)
 	}
-	catalog, err := loadJSON[[]Job](filepath.Join(dir, suggestionsFile))
+	catalogPath := filepath.Join(dir, suggestionsFile)
+	catalog, err := loadJSON[[]Job](catalogPath)
 	if err != nil {
 		return err
 	}
@@ -86,6 +88,13 @@ func run() error {
 		f, _ := fk.parse(v)                 // a feed still being filled in is invalid, yet matches fine
 		cfg, _ := loadJSON[Config](cfgPath) // unreadable config means the default boards per feed
 		return suggest(catalog, f, cfg.boards())
+	}
+	fk.reload = func() error {
+		c, err := loadJSON[[]Job](catalogPath)
+		if err == nil {
+			catalog = c
+		}
+		return err
 	}
 	viewsPath := filepath.Join(dir, jobViewsFile)
 	fk.jobs = func(f Feed) ([]Job, jobView, error) {
@@ -116,6 +125,8 @@ func run() error {
 		return err
 	}
 	conf := newConfigModel(cfgPath, cfg)
+	sidebarWidth = cfg.sidebar()
+	refreshEvery = time.Duration(cfg.Refresh) * time.Second
 	if err := applyTheme(cmp.Or(cfg.Theme, defaultTheme)); err != nil {
 		conf.status = err.Error() // shown on the config page; the theme falls back
 	}

@@ -4,13 +4,13 @@
 .
 ├── cmd/hirectl/         # the app: one `main` package, tests beside each file
 │   ├── main.go          # entry point: TUI, or `hirectl run` / `hirectl discover` for cron, `hirectl list`, `hirectl cross-check`; holds the `version` const used by `make bump`
-│   ├── app.go           # root TUI: home is Feeds (sidebar), function-key bar, switches modules (F2 Feeds, F9 Config, F10 Quit), sets the theme's screen colors
+│   ├── app.go           # root TUI: home is Feeds (sidebar), function-key bar, switches modules (F2 Feeds, F9 Config, F10 Quit), F5 and timed refresh, shows Feeds' sidebar left of every other module, sets the theme's screen colors
 │   ├── store.go         # data dir, generic JSON load/save, data dir lock (hirectl.lock)
 │   ├── theme.go         # themes (palettes), styles built from the applied one; dracula default
-│   ├── config_ui.go     # Config type (config.json) and the F9 config module: theme, default locations for new feeds, boards per feed
+│   ├── config_ui.go     # Config type (config.json) and the F9 config module: theme, sidebar width, default locations for new feeds, boards per feed, auto-refresh seconds
 │   ├── feed.go          # Feed type (sources, no boards), its list kind, validation, job matching and score (skills, locations)
 │   ├── list_ui.go       # generic list module: sidebar list, right pane for logo/view/form/delete, form checklist (feed sources, with matching boards), derived fields (feed ID from title, live and ctrl+g)
-│   ├── jobs_ui.go       # feed's jobs pane (o in Feeds): fuzzy search, sources checklist, posted, location, score and level filters, sorting (saved per feed in jobviews.json), open in browser
+│   ├── jobs_ui.go       # feed's jobs pane (→ or o in Feeds): fuzzy search, sources checklist, posted, location, score and level filters, sorting (saved per feed in jobviews.json), open in browser
 │   ├── run.go           # `hirectl run --feeds --sources --delay`: cross-check, pick each feed's top boards from suggestions.json, fetch them paced per integration, keep matching jobs per feed with score and level in jobs/<feed-id>.json, print those with new URLs, prune files of removed feeds
 │   ├── list.go          # `hirectl list feeds|jobs|boards|sources`, `--since`/`--sort` for jobs: print stored data; job and board line format shared with run and discover
 │   ├── discover.go      # `hirectl discover --boards --sources --delay`: boards from Common Crawl (by path or subdomain) or given, jobs into suggestions.json, saved every 30s with boards left in discover.json to resume; boards matching a feed, top boards, source suggestions

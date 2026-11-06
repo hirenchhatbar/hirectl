@@ -89,3 +89,10 @@ func TestFeedScore(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedNotes(t *testing.T) {
+	f := Feed{Skills: []string{"Go", "Rust"}}
+	if got := f.notes(); !reflect.DeepEqual(got, []string{"[Go, Rust]", "[any location]"}) {
+		t.Fatalf("notes %q", got)
+	}
+}

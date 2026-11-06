@@ -175,11 +175,11 @@ func TestRunCmdTopBoards(t *testing.T) {
 	if got := run("b"); got != "go\tfake:b\tB\t\t2\t\n" {
 		t.Fatalf("top b printed %q, want only fake:b's job", got)
 	}
-	if got := run("a"); got != "" {
-		t.Fatalf("a again printed %q, want nothing: its jobs stayed in the file", got)
+	if got, _ := loadJSON[[]Job](jobFile(dir, "go")); len(got) != 1 || got[0].Board != "fake:b" {
+		t.Fatalf("stored %+v, want only fake:b's job: fake:a is no longer picked", got)
 	}
-	if got, _ := loadJSON[[]Job](jobFile(dir, "go")); len(got) != 2 {
-		t.Fatalf("stored %+v, want both boards' jobs", got)
+	if got := run("a"); got != "go\tfake:a\tA\t\t1\t\n" {
+		t.Fatalf("a again printed %q, want its job anew", got)
 	}
 }
 
@@ -200,5 +200,21 @@ func TestRunCmdKeepsFailedBoard(t *testing.T) {
 	}
 	if got, _ := loadJSON[[]Job](path); len(got) != 1 {
 		t.Fatalf("failed board's jobs now %+v, want kept", got)
+	}
+}
+
+func TestRunCmdKeepsUnselectedSource(t *testing.T) {
+	fakeSource(t, map[string][]Job{"a": {{Title: "A", URL: "1"}}}, nil)
+	dir := t.TempDir()
+	saveData(t, dir, []Feed{{ID: "go", Enabled: true}}, []Job{{Board: "fake:a"}, {Board: "greenhouse:b"}}, Config{})
+	path := jobFile(dir, "go")
+	if err := saveJSON(path, []Job{{Board: "greenhouse:b", Title: "B", URL: "2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCmd(context.Background(), dir, []string{"--delay", "0s", "--sources", "fake"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := loadJSON[[]Job](path); len(got) != 2 {
+		t.Fatalf("stored %+v, want fake:a's job plus greenhouse:b's kept", got)
 	}
 }

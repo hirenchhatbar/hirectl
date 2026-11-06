@@ -284,6 +284,11 @@ func (p jobsPane) update(msg tea.KeyPressMsg) (jobsPane, tea.Cmd, error) {
 		p.level = (p.level + 1) % (len(levels) + 1)
 	case "S":
 		p.sort = (p.sort + 1) % len(jobSorts)
+	case "c": // clear search, filters and sort
+		saved := p.saved
+		p = newJobsPane(p.title, p.all, jobView{}, p.width, p.height)
+		p.saved = saved
+		return p, nil, nil
 	case "enter":
 		if len(p.shown) > 0 {
 			return p, nil, openURL(p.shown[p.cursor].URL)
@@ -329,7 +334,7 @@ func (p jobsPane) view() (body, keys string) {
 		"",
 	}
 	if p.picking {
-		return strings.Join(append(lines, p.picksView()...), "\n"), "j/k move  space toggle  enter keep  esc undo  none checked shows all"
+		return strings.Join(append(lines, p.picksView()...), "\n"), "j/k move  space toggle  enter keep  esc undo  none checked shows all  q quit"
 	}
 	boardW, locW := 0, 0
 	for _, j := range p.shown {
@@ -358,7 +363,7 @@ func (p jobsPane) view() (body, keys string) {
 		lines = append(lines, slices.Repeat([]string{""}, p.rows()-min(len(p.shown)-p.offset, p.rows())+1)...)
 		lines = append(lines, offStyle.Render(ansi.Truncate(p.shown[p.cursor].URL, p.width, "…")))
 	}
-	keys = "/ search  l location  s sources  d posted  r score  y yoe  S sort  enter open  j/k move  esc back"
+	keys = "/ search  l location  s sources  d posted  r score  y yoe  S sort  c clear  enter open  j/k move  ← sidebar  esc back  q quit"
 	if p.typing >= 0 {
 		keys = "type to filter  enter keep  esc undo"
 	}

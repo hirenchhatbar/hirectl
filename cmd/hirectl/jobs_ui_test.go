@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestFuzzy(t *testing.T) {
@@ -68,6 +69,17 @@ func TestJobsPane(t *testing.T) {
 		}
 		return strings.Join(got, ", ")
 	}
+	if !strings.Contains(ansi.Strip(m.View()), " 3│") {
+		t.Fatalf("sidebar lacks the job count:\n%s", m.View())
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if lm := m.(listModel[Feed]); lm.mode != modeJobs {
+		t.Fatalf("after →: mode %v, want jobs", lm.mode)
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if lm := m.(listModel[Feed]); lm.mode != modeLogo {
+		t.Fatalf("after ← in jobs: mode %v, want the sidebar", lm.mode)
+	}
 	press("o")
 	if lm := m.(listModel[Feed]); lm.mode != modeJobs || titles() != "PHP Engineer, Go Developer, Golang Lead" {
 		t.Fatalf("after o: mode %v, jobs %q; want newest first, undated last", lm.mode, titles())
@@ -124,5 +136,9 @@ func TestJobsPane(t *testing.T) {
 	press("o")
 	if p := m.(listModel[Feed]).jobs; !reflect.DeepEqual(p.settings(), saved["go"]) || titles() != "Golang Lead" {
 		t.Fatalf("reopened with %+v, jobs %q; want saved settings applied", p.settings(), titles())
+	}
+	press("c") // clear: search, filters and sort reset, and saved
+	if titles() != "PHP Engineer, Go Developer, Golang Lead" || !reflect.DeepEqual(saved["go"], jobView{Sources: []string{}, Sort: "newest"}) {
+		t.Fatalf("after c: jobs %q, saved %+v", titles(), saved["go"])
 	}
 }

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"cmp"
+	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -12,6 +15,7 @@ import (
 type module interface {
 	Update(tea.Msg) (module, tea.Cmd)
 	View() string
+	typing() bool // a text input has focus, so q types rather than quits
 }
 
 // closeMsg asks the app to close the active module and show home; see closeModule.
@@ -19,6 +23,28 @@ type closeMsg struct{}
 
 // closeModule is the cmd a module returns on Esc at its top level.
 func closeModule() tea.Msg { return closeMsg{} }
+
+// refreshMsg asks every module to reload the data files that commands such as run and discover write.
+type refreshMsg struct{}
+
+// refreshEvery is the auto-refresh interval, 0 for off; set from config.json by the config module,
+// which bumps refreshGen on a change so the old timer's ticks are dropped.
+var (
+	refreshEvery time.Duration
+	refreshGen   int
+)
+
+// refreshTick is an auto-refresh timer firing, from timer generation refreshGen.
+type refreshTick int
+
+// scheduleRefresh starts the auto-refresh timer, if on.
+func scheduleRefresh() tea.Cmd {
+	if refreshEvery <= 0 {
+		return nil
+	}
+	gen := refreshGen
+	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return refreshTick(gen) })
+}
 
 type slot struct {
 	key, name string // key as tea reports it, e.g. "f2"
@@ -33,9 +59,10 @@ type app struct {
 }
 
 const (
-	quitKey = "f10"
-	barPad  = 1 // columns before the first function key
-	barRows = 2 // blank spacer row plus the function-key bar
+	quitKey    = "f10"
+	refreshKey = "f5"
+	barPad     = 1 // columns before the first function key
+	barRows    = 2 // blank spacer row plus the function-key bar
 )
 
 var logoColors = []string{"#FF5F87", "#FF87AF", "#D787FF", "#87AFFF", "#5FD7FF"}
@@ -58,11 +85,13 @@ func logoView(w, h int) string {
 
 func newApp(slots ...slot) app { return app{slots: slots} }
 
-func (a app) Init() tea.Cmd { return nil }
+func (a app) Init() tea.Cmd { return scheduleRefresh() }
 
-// barItems lists the function-key bar entries in display order; the last is quit.
+// barItems lists the function-key bar entries by key number: the modules, refresh and quit.
 func (a app) barItems() []slot {
-	return append(append([]slot(nil), a.slots...), slot{key: quitKey, name: "Quit"})
+	items := append(slices.Clone(a.slots), slot{key: refreshKey, name: "Refresh"}, slot{key: quitKey, name: "Quit"})
+	slices.SortStableFunc(items, func(x, y slot) int { return cmp.Or(cmp.Compare(len(x.key), len(y.key)), strings.Compare(x.key, y.key)) })
+	return items
 }
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -70,12 +99,20 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case closeMsg:
 		a.active = 0
 		return a, nil
+	case refreshTick:
+		if int(msg) != refreshGen {
+			return a, nil // from a timer the config module replaced
+		}
+		return a, tea.Batch(a.broadcast(refreshMsg{}), scheduleRefresh())
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 		return a, a.broadcast(tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - barRows})
 	case tea.KeyPressMsg:
-		if k := msg.String(); k == "ctrl+c" || k == quitKey {
+		if k := msg.String(); k == "ctrl+c" || k == quitKey || k == "q" && !a.slots[a.active].m.typing() {
 			return a, tea.Quit
+		}
+		if msg.String() == refreshKey {
+			return a, a.broadcast(refreshMsg{})
 		}
 		if a.open(msg.String()) {
 			return a, nil
@@ -86,8 +123,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, it := range a.barItems() {
 				w := ansi.StringWidth(barLabel(it))
 				if msg.X >= x && msg.X < x+w {
-					if it.key == quitKey {
+					switch it.key {
+					case quitKey:
 						return a, tea.Quit
+					case refreshKey:
+						return a, a.broadcast(refreshMsg{})
 					}
 					a.open(it.key)
 					break
@@ -147,6 +187,11 @@ func (a app) View() tea.View {
 		bar = append(bar, fkeyStyle.Render(key)+style.Render(" "+name))
 	}
 	body := a.slots[a.active].m.View()
+	if s, ok := a.slots[0].m.(interface{ sidebar() string }); ok && a.active != 0 && body != "" {
+		// every other module opens right of home's sidebar: put it beside the module's panes, above its key bar
+		i := strings.LastIndex(body, "\n")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, s.sidebar(), body[:i]) + body[i:]
+	}
 	line := strings.Repeat(" ", barPad) + strings.Join(bar, barStyle.Render(" "))
 	v.SetContent(body + "\n\n" + barStyle.Width(a.width).Render(ansi.Truncate(line, a.width, "")))
 	return v

@@ -45,8 +45,20 @@ var feedKind = kind[Feed]{
 }
 
 func (f Feed) label() string { return f.Title }
-func (f Feed) key() string   { return f.ID }
-func (f Feed) on() bool      { return f.Enabled }
+
+// notes are the feed's Skills and Locations, each in brackets, e.g. "[Go, Rust]"; none means any.
+func (f Feed) notes() []string {
+	return []string{bracket(f.Skills, "any skill"), bracket(f.Locations, "any location")}
+}
+
+func bracket(l []string, none string) string {
+	if len(l) == 0 {
+		return "[" + none + "]"
+	}
+	return "[" + strings.Join(l, ", ") + "]"
+}
+func (f Feed) key() string { return f.ID }
+func (f Feed) on() bool    { return f.Enabled }
 
 func (f Feed) withOn(on bool) Feed {
 	f.Enabled = on

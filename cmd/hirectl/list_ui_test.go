@@ -114,3 +114,45 @@ func TestFormPicksEnterSaves(t *testing.T) {
 		t.Fatalf("items %v, mode %v, status %q; want feed saved with Enter on the checklist", lm.items, lm.mode, lm.status)
 	}
 }
+
+func TestSidebarFeedRows(t *testing.T) {
+	feeds := []Feed{{ID: "a", Title: "A", Skills: []string{"Go"}}, {ID: "b", Title: "B", Locations: []string{"India"}}}
+	var m module = newListModel(feedKind, "", feeds)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	view := m.View()
+	for _, s := range []string{"[Go]", "[any location]", "[any skill]", "[India]"} {
+		if !strings.Contains(view, s) {
+			t.Fatalf("sidebar lacks %q:\n%s", s, view)
+		}
+	}
+	m, _ = m.Update(tea.MouseClickMsg{X: 3, Y: 6, Button: tea.MouseLeft}) // B's locations row
+	if got := m.(listModel[Feed]).cursor; got != 1 {
+		t.Fatalf("click on B's third row: cursor %d, want 1", got)
+	}
+}
+
+func TestListRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "feeds.json")
+	k := feedKind
+	jobs := []Job{{Board: "lever:a", Title: "Go Dev", URL: "u1"}}
+	k.jobs = func(Feed) ([]Job, jobView, error) { return jobs, jobView{}, nil }
+	var m module = newListModel(k, path, []Feed{{ID: "a", Title: "A"}})
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if err := saveJSON(path, []Feed{{ID: "b", Title: "B"}, {ID: "a", Title: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	jobs = append(jobs, Job{Board: "lever:a", Title: "Rust Dev", URL: "u2"})
+	m, _ = m.Update(refreshMsg{})
+	lm := m.(listModel[Feed])
+	if len(lm.items) != 2 || lm.cursor != 1 || lm.mode != modeJobs || len(lm.jobs.all) != 2 || lm.counts["a"] != 2 {
+		t.Fatalf("items %v, cursor %d, mode %d, jobs %d, counts %v; want feed a kept selected with 2 jobs", lm.items, lm.cursor, lm.mode, len(lm.jobs.all), lm.counts)
+	}
+	if err := saveJSON(path, []Feed{{ID: "b", Title: "B"}}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.Update(refreshMsg{})
+	if lm := m.(listModel[Feed]); lm.mode != modeLogo || len(lm.items) != 1 {
+		t.Fatalf("mode %d, items %v; want logo once the open feed is gone", lm.mode, lm.items)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -12,7 +13,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const sidebarWidth = 30 // includes the border
+// sidebarWidth is the applied sidebar width, including the border; set from config.json by the config module.
+var sidebarWidth = defaultSidebar
 
 // labelFmt pads field labels so values line up in the form and the read-only view.
 const labelFmt = "%-10s"
@@ -33,6 +35,7 @@ const (
 // record is an item a list module manages, such as Feed.
 type record[T any] interface {
 	label() string    // sidebar and delete-prompt text
+	notes() []string  // muted sidebar rows under the label; as many for every item
 	key() string      // unique among a list's items
 	values() []string // field values in kind.fields order
 	on() bool
@@ -60,6 +63,7 @@ type kind[T record[T]] struct {
 	deriveHint string                          // ctrl+g key hint for derive, e.g. "ID from title"
 	jobs       func(T) ([]Job, jobView, error) // optional: an item's jobs, listed by o in the right pane, and its saved jobView
 	saveView   func(T, jobView) error          // optional: saves an item's jobView as the jobs pane changes it
+	reload     func() error                    // optional: rereads other data on refresh, e.g. suggestions.json for picks
 }
 
 // listModel is a module: items in a sidebar, right pane for logo/view/form/delete.
@@ -72,12 +76,13 @@ type listModel[T record[T]] struct {
 	mode          mode
 	editing       int // item index being edited, -1 for a new item
 	inputs        []textinput.Model
-	focus         int      // input index, or len(inputs) for the picks checklist
-	picks         []pick   // loaded when the checklist gets focus
-	picksHead     string   // heading of picks
-	pickAt        int      // selected pick
-	jobs          jobsPane // shown in modeJobs
-	status        string   // error shown in the bottom bar until the next key
+	focus         int            // input index, or len(inputs) for the picks checklist
+	picks         []pick         // loaded when the checklist gets focus
+	picksHead     string         // heading of picks
+	pickAt        int            // selected pick
+	jobs          jobsPane       // shown in modeJobs
+	counts        map[string]int // stored jobs per item key, shown in the sidebar; nil without kind.jobs
+	status        string         // error shown in the bottom bar until the next key
 	width, height int
 }
 
@@ -89,7 +94,66 @@ func newListModel[T record[T]](k kind[T], path string, items []T) listModel[T] {
 		in.Placeholder = k.hints[i]
 		m.inputs = append(m.inputs, in)
 	}
+	m.countJobs()
 	return m
+}
+
+// countJobs reloads each item's stored job count; an item whose jobs fail to load shows none.
+func (m *listModel[T]) countJobs() {
+	if m.kind.jobs == nil {
+		return
+	}
+	m.counts = map[string]int{}
+	for _, it := range m.items {
+		if jobs, _, err := m.kind.jobs(it); err == nil {
+			m.counts[it.key()] = len(jobs)
+		}
+	}
+}
+
+// refresh rereads items, job counts, kind's other data and the open jobs list, which keeps its search,
+// filters, sort and cursor, and the selection by key. An open form, delete prompt, or jobs list being
+// typed in or picked in is left alone, so a refresh never drops input.
+func (m *listModel[T]) refresh() {
+	if m.mode == modeForm || m.mode == modeDelete || m.mode == modeJobs && m.jobs.busy() {
+		return
+	}
+	items, err := loadJSON[[]T](m.path)
+	if err == nil && m.kind.reload != nil {
+		err = m.kind.reload()
+	}
+	if err != nil {
+		m.status = "refresh failed: " + err.Error()
+		return
+	}
+	var key string
+	if len(m.items) > 0 {
+		key = m.items[m.cursor].key()
+	}
+	m.items = items
+	m.countJobs()
+	i := slices.IndexFunc(items, func(it T) bool { return it.key() == key })
+	m.move(max(i, m.cursor))
+	switch {
+	case i < 0:
+		m.mode = modeLogo // the shown item is gone
+	case m.mode == modeJobs:
+		at := m.jobs.cursor
+		m.openJobs()
+		m.jobs.move(at)
+	}
+}
+
+// openJobs lists the selected item's jobs in the right pane.
+func (m *listModel[T]) openJobs() {
+	jobs, view, err := m.kind.jobs(m.items[m.cursor])
+	if err != nil {
+		m.status = err.Error()
+		return
+	}
+	m.counts[m.items[m.cursor].key()] = len(jobs)
+	w, h := m.jobsSize()
+	m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, w, h), modeJobs
 }
 
 // jobsSize is the width and height inside the right pane's border, where the jobs pane goes.
@@ -98,8 +162,14 @@ func (m listModel[T]) jobsSize() (int, int) { return max(m.width-sidebarWidth, 2
 // listFocused reports whether keys and clicks drive the sidebar.
 func (m listModel[T]) listFocused() bool { return m.mode == modeLogo || m.mode == modeView }
 
+// itemRows is how many sidebar rows an item takes: its label, then its notes.
+func itemRows[T record[T]]() int {
+	var z T
+	return 1 + len(z.notes())
+}
+
 // listRows is how many items fit in the sidebar.
-func (m listModel[T]) listRows() int { return max(m.height-3, 1) }
+func (m listModel[T]) listRows() int { return max((m.height-3)/itemRows[T](), 1) }
 
 // commit saves items and only then makes them current, so a failed save loses nothing on disk.
 func (m *listModel[T]) commit(items []T) bool {
@@ -109,6 +179,7 @@ func (m *listModel[T]) commit(items []T) bool {
 	}
 	m.items = items
 	m.cursor = min(m.cursor, max(len(items)-1, 0))
+	m.countJobs()
 	return true
 }
 
@@ -161,6 +232,10 @@ func (m *listModel[T]) focusField(i int) tea.Cmd {
 }
 
 func (m listModel[T]) onPicks() bool { return m.focus == len(m.inputs) }
+
+func (m listModel[T]) typing() bool {
+	return m.mode == modeForm && !m.onPicks() || m.mode == modeJobs && m.jobs.typing >= 0
+}
 
 // togglePick adds v to the last field's comma list, or removes it when there.
 func (m *listModel[T]) togglePick(v string) {
@@ -218,6 +293,9 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 		m.move(m.cursor)
 		m.jobs.resize(m.jobsSize())
 		return m, nil
+	case refreshMsg:
+		m.refresh()
+		return m, nil
 	case tea.KeyPressMsg:
 		m.status = ""
 		switch m.mode {
@@ -232,9 +310,15 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 			m.mode = modeLogo
 			return m, nil
 		case modeJobs:
-			if msg.String() == "esc" && !m.jobs.busy() {
-				m.mode = modeView
-				return m, nil
+			if !m.jobs.busy() {
+				switch msg.String() {
+				case "esc":
+					m.mode = modeView
+					return m, nil
+				case "left", "h": // back to the sidebar, as → came from it
+					m.mode = modeLogo
+					return m, nil
+				}
 			}
 			var cmd tea.Cmd
 			var err error
@@ -287,8 +371,6 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 
 func (m listModel[T]) updateList(msg tea.KeyPressMsg) (module, tea.Cmd) {
 	switch msg.String() {
-	case "q":
-		return m, tea.Quit
 	case "j", "down":
 		m.move(m.cursor + 1)
 	case "k", "up":
@@ -299,8 +381,12 @@ func (m listModel[T]) updateList(msg tea.KeyPressMsg) (module, tea.Cmd) {
 		m.move(len(m.items) - 1)
 	case "a":
 		return m, m.openForm(-1)
-	case "l", "right", "enter":
-		if len(m.items) > 0 {
+	case "l", "right", "o", "enter":
+		switch {
+		case len(m.items) == 0:
+		case m.kind.jobs != nil && msg.String() != "enter":
+			m.openJobs()
+		case msg.String() != "o": // without jobs, → views the item like enter
 			m.mode = modeView
 		}
 	case "h", "left":
@@ -320,16 +406,6 @@ func (m listModel[T]) updateList(msg tea.KeyPressMsg) (module, tea.Cmd) {
 	case "d":
 		if len(m.items) > 0 {
 			m.mode = modeDelete
-		}
-	case "o":
-		if m.kind.jobs != nil && len(m.items) > 0 {
-			jobs, view, err := m.kind.jobs(m.items[m.cursor])
-			if err != nil {
-				m.status = err.Error()
-				return m, nil
-			}
-			w, h := m.jobsSize()
-			m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, w, h), modeJobs
 		}
 	}
 	return m, nil
@@ -414,8 +490,8 @@ func (m listModel[T]) click(msg tea.MouseClickMsg) (module, tea.Cmd) {
 		return m, nil
 	}
 	if msg.X < sidebarWidth && m.listFocused() {
-		row := m.offset + msg.Y - 1
-		if msg.Y < 1 || msg.Y > m.listRows() || row >= len(m.items) {
+		row := m.offset + (msg.Y-1)/itemRows[T]()
+		if msg.Y < 1 || msg.Y > m.listRows()*itemRows[T]() || row >= len(m.items) {
 			return m, nil
 		}
 		if row == m.cursor { // clicking the selected item opens it
@@ -438,28 +514,7 @@ func (m listModel[T]) View() string {
 	h := m.height - 1 // last row is the key bar
 	rightW := max(m.width-sidebarWidth, 20)
 	inner := rightW - 2
-
-	var rows []string
-	for i := m.offset; i < len(m.items) && i < m.offset+m.listRows(); i++ {
-		it := m.items[i]
-		box := "[ ] "
-		if it.on() {
-			box = "[x] "
-		}
-		row := ansi.Truncate(box+it.label(), sidebarWidth-2, "…")
-		row += strings.Repeat(" ", sidebarWidth-2-ansi.StringWidth(row))
-		switch {
-		case i == m.cursor:
-			row = selStyle.Render(row)
-		case !it.on():
-			row = offStyle.Render(row)
-		}
-		rows = append(rows, row)
-	}
-	if len(m.items) == 0 {
-		rows = append(rows, offStyle.Render("no "+strings.ToLower(m.kind.name)+"s, press a"))
-	}
-	left := paneStyle.Width(sidebarWidth).Height(h).Render(strings.Join(rows, "\n"))
+	left := m.sidebar()
 
 	var body, keys string
 	switch m.mode {
@@ -479,7 +534,7 @@ func (m listModel[T]) View() string {
 		body = strings.Join(lines, "\n")
 		keys = "tab/↑↓ field  enter/ctrl+s save  esc cancel"
 		if m.onPicks() {
-			keys = "j/k move  space toggle  tab field  enter/ctrl+s save  esc cancel"
+			keys = "j/k move  space toggle  tab field  enter/ctrl+s save  esc cancel  q quit"
 		}
 		if m.kind.derive != nil {
 			keys = "ctrl+g " + m.kind.deriveHint + "  " + keys
@@ -498,19 +553,19 @@ func (m listModel[T]) View() string {
 		body = strings.Join(lines, "\n")
 		keys = "e edit  space on/off  d delete  j/k move  ← back  esc home  q quit"
 		if m.kind.jobs != nil {
-			keys = "o jobs  " + keys
+			keys = "→/o jobs  " + keys
 		}
 	case modeDelete:
 		body = lipgloss.Place(inner, h-2, lipgloss.Center, lipgloss.Center,
 			fmt.Sprintf("Delete %q?  y/n", m.items[m.cursor].label()))
-		keys = "y delete  any other key cancel"
+		keys = "y delete  q quit  any other key cancel"
 	case modeJobs:
 		body, keys = m.jobs.view()
 	default:
 		body = logoView(inner, h-2)
 		keys = "j/k move  →/enter view  a add  e edit  space on/off  d delete  esc home  q quit"
 		if m.kind.jobs != nil {
-			keys = "o jobs  " + keys
+			keys = "→/o jobs  j/k move  enter view  a add  e edit  space on/off  d delete  esc home  q quit"
 		}
 	}
 	right := paneStyle.Width(rightW).Height(h).Render(body)
@@ -520,6 +575,40 @@ func (m listModel[T]) View() string {
 		bar = " " + errStyle.Render(m.status)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n" + ansi.Truncate(bar, m.width, "…")
+}
+
+// sidebar renders the items pane, sidebarWidth wide and the height above the key bar; the config module shows it too.
+func (m listModel[T]) sidebar() string {
+	var rows []string
+	for i := m.offset; i < len(m.items) && i < m.offset+m.listRows(); i++ {
+		it := m.items[i]
+		box := "[ ] "
+		if it.on() {
+			box = "[x] "
+		}
+		title := cell(box+it.label(), sidebarWidth-2)
+		if n, ok := m.counts[it.key()]; ok {
+			c := strconv.Itoa(n)
+			title = cell(box+it.label(), sidebarWidth-3-len(c)) + " " + c
+		}
+		lines := []string{title}
+		for _, n := range it.notes() {
+			lines = append(lines, cell(strings.Repeat(" ", len(box))+n, sidebarWidth-2))
+		}
+		for j, l := range lines {
+			switch {
+			case i == m.cursor:
+				l = selStyle.Render(l)
+			case !it.on() || j > 0:
+				l = offStyle.Render(l)
+			}
+			rows = append(rows, l)
+		}
+	}
+	if len(m.items) == 0 {
+		rows = append(rows, offStyle.Render("no "+strings.ToLower(m.kind.name)+"s, press a"))
+	}
+	return paneStyle.Width(sidebarWidth).Height(m.height - 1).Render(strings.Join(rows, "\n"))
 }
 
 // picksView renders the picks checklist in at most rows lines of width: heading, aligned rows scrolled to
