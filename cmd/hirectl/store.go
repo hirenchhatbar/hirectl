@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // dataDir returns $HIRECTL_DIR, or hirectl in the user config dir.
@@ -60,4 +61,25 @@ func saveJSON(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// lockFile is the data dir's lock, held while a command reads, merges and writes shared files.
+const lockFile = "hirectl.lock"
+
+// lockDir takes an exclusive lock on dir's lockFile, waiting while another process holds it, and
+// returns its release. The OS drops the lock if the process dies. shortcut: flock is Unix only, use
+// LockFileEx if hirectl ever builds for Windows.
+func lockDir(dir string) (unlock func(), err error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, lockFile), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock %s: %w", f.Name(), err)
+	}
+	return func() { f.Close() }, nil // closing releases the lock
 }

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -42,7 +44,7 @@ func gzipped(s string) []byte {
 
 func TestCrawlBoards(t *testing.T) {
 	cdx := gzipped("co,lever,jobs)/acme/123 1 {}\nco,lever,jobs)/beta?x=1 1 {}\nco,lever,jobs)/acme 1 {}\nco,lever,jobs)/ 1 {}\n" +
-		"io,greenhouse,boards)/gamma/jobs/1 1 {}\n")
+		"com,recruitee,delta)/o/dev 1 {}\nio,greenhouse,boards)/gamma/jobs/1 1 {}\n")
 	data := append([]byte("junk"), cdx...)
 	base := crawlData + "cc-index/collections/CC-MAIN-1/indexes/"
 	idx := fmt.Sprintf("co,lever,jobs)/acme 1\tcdx-0.gz\t4\t%d\t1\n", len(cdx))
@@ -62,9 +64,35 @@ func TestCrawlBoards(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})}
-	got, err := crawlBoards(context.Background(), client, []string{"lever"})
-	if want := []string{"lever:acme", "lever:beta"}; err != nil || !reflect.DeepEqual(got, want) {
+	got, err := crawlBoards(context.Background(), client, []string{"lever", "recruitee"}, newProgress(io.Discard, io.Discard))
+	if want := []string{"lever:acme", "lever:beta", "recruitee:delta"}; err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, %v; want %v", got, err, want)
+	}
+}
+
+func TestCrawlCompany(t *testing.T) {
+	for _, c := range []struct{ source, key, want string }{
+		{"lever", "co,lever,jobs)/acme/1?x", "acme"},
+		{"lever", "co,lever,jobs)/", ""},
+		{"recruitee", "com,recruitee,acme)/o/dev", "acme"},
+		{"recruitee", "com,recruitee,eu,acme)/", ""},
+		{"personio", "com,personio,jobs,acme)/job/1", "acme"},
+		{"workday", "com,myworkdayjobs,wd5,nvidia)/nvidiaexternalcareersite/job/x", "nvidia.wd5/nvidiaexternalcareersite"},
+		{"workday", "com,myworkdayjobs,wd1,acme)/en-us/careers", "acme.wd1/careers"},
+		{"workday", "com,myworkdayjobs,wd1,acme)/en-us", ""},
+		{"workday", "com,myworkdayjobs,wd1,acme)/wday/cxs/acme/careers/jobs", ""},
+		{"workday", "com,myworkdayjobs,www)/careers", ""},
+	} {
+		in := integrations[c.source]
+		var got string
+		for _, h := range in.hosts {
+			if strings.HasPrefix(c.key, urlKey(h)) {
+				got = crawlCompany(in, h, c.key)
+			}
+		}
+		if got != c.want {
+			t.Errorf("%s %s: got %q, want %q", c.source, c.key, got, c.want)
+		}
 	}
 }
 
@@ -81,14 +109,14 @@ func TestMerge(t *testing.T) {
 		{err: fmt.Errorf("GET: %w", errNotFound)},
 		{jobs: []Job{{Title: "Go Dev", Location: "Remote", URL: "https://x/1"}}},
 	}
-	got, errs := merge(stored, boards, res)
+	got, failed := merge(stored, boards, res)
 	want := []Job{
 		{Board: "lever:flaky", Title: "Kept"},
 		{Board: "lever:new", Title: "Go Dev", Location: "Remote"},
 		{Board: "lever:other", Title: "Untouched"},
 	}
-	if len(errs) != 1 || !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %+v, %v; want %+v and 1 error", got, errs, want)
+	if failed != 1 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, %d failed; want %+v and 1 failed", got, failed, want)
 	}
 }
 
@@ -102,20 +130,30 @@ func TestSuggest(t *testing.T) {
 	}
 	catalog[0].Tech = []string{"Go", "Kafka"}
 	catalog = append(catalog, Job{Board: "lever:e", Title: "Backend Engineer", Location: "Remote", Tech: []string{"Go"}})
-	head, got := suggest(catalog, Feed{Skills: []string{"Golang"}, Location: "remote"})
-	want := []pick{
-		{"lever:a", "1 of 1 jobs", "Go, Kafka", "Matching roles: Go Dev", true},
-		{"lever:e", "1 of 1 jobs", "Go", "Matching roles: Backend Engineer", true},
-		{"greenhouse:b", "0 of 2 jobs", "", "No matching roles", false},
-		{"lever:c", "0 of 1 jobs", "", "No matching roles", false},
-		{"lever:d", "0 of 1 jobs", "", "No matching roles", false},
+	pickOf := func(picks []pick, s string) pick {
+		t.Helper()
+		i := slices.IndexFunc(picks, func(p pick) bool { return p.value == s })
+		if i < 0 {
+			t.Fatalf("no pick %s in %+v", s, picks)
+		}
+		return picks[i]
 	}
-	if head != "Suggested boards for Golang in remote: 2 of 5 boards" || !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %q %+v, want %+v; Golang finds tagged Go jobs only", head, got, want)
+	head, got := suggest(catalog, Feed{Skills: []string{"Golang"}, Locations: []string{"remote"}, Sources: []string{"greenhouse"}}, 10)
+	if len(got) != len(integrations) || head != "Sources for Golang in remote: 3 boards match, run fetches the top 10 on the checked sources (none checked: all)" {
+		t.Fatalf("got %q %+v, want every source; checked sources do not narrow the counts", head, got)
 	}
-	_, got = suggest(catalog, Feed{Skills: []string{"Go"}, Location: "remote"})
-	if got[0].value != "greenhouse:b" || got[0].note != "2 of 2 jobs" || got[0].detail != "Matching roles: Go Dev · Senior Go Engineer" {
-		t.Fatalf("top pick %+v, want greenhouse:b with 2 of 2 jobs", got[0])
+	if p, want := pickOf(got, "lever"), (pick{"lever", "2 boards, 2 jobs", "", "Top boards: lever:a (1) · lever:e (1)"}); p != want {
+		t.Fatalf("lever pick %+v, want %+v; Golang finds Go in titles and tags", p, want)
+	}
+	if p := pickOf(got, "greenhouse"); p.note != "1 boards, 2 jobs" {
+		t.Fatalf("greenhouse pick %+v, want Golang to find Go in titles", p)
+	}
+	_, got = suggest(catalog, Feed{Skills: []string{"Go"}, Locations: []string{"remote"}}, 1)
+	if p := pickOf(got, "greenhouse"); p.note != "1 boards, 2 jobs" || p.detail != "Top boards: greenhouse:b (2)" {
+		t.Fatalf("greenhouse pick %+v, want greenhouse:b with 2 jobs", p)
+	}
+	if p := pickOf(got, "lever"); p.detail != "Top boards: lever:a (1)" {
+		t.Fatalf("lever pick %+v, want only the top board, lever:a by name", p)
 	}
 }
 
@@ -143,15 +181,60 @@ func TestDiscoverCmdBoards(t *testing.T) {
 	defer delete(integrations, "fa")
 	defer delete(integrations, "fb")
 	var out strings.Builder
-	if err := discoverCmd(context.Background(), t.TempDir(), []string{"--sources", "fa,fb", "--delay", "0s", "--boards", "fa:stripe, Acme Corp"}, &out); err != nil {
+	if err := discoverCmd(context.Background(), t.TempDir(), []string{"--sources", "fa,fb", "--delay", "0s", "--boards", "fa:stripe, Acme Corp"}, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if want := "fa:acmecorp\t1 jobs\t\nfa:stripe\t1 jobs\t\nfb:acmecorp\t1 jobs\t\n"; out.String() != want {
-		t.Errorf("got %q, want %q", out.String(), want)
+	got := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	slices.Sort(got) // printed as found, integrations in parallel
+	if want := []string{"fa:acmecorp\t1 jobs\t", "fa:stripe\t1 jobs\t", "fb:acmecorp\t1 jobs\t"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 	for _, b := range []string{"nope:stripe", "fa:"} {
-		if err := discoverCmd(context.Background(), t.TempDir(), []string{"--boards", b}, io.Discard); err == nil {
+		if err := discoverCmd(context.Background(), t.TempDir(), []string{"--boards", b}, io.Discard, io.Discard); err == nil {
 			t.Errorf("--boards %q: want error", b)
 		}
+	}
+}
+
+func TestDiscoverCmdResume(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var probed []string
+	integrations["fa"] = &integration{fetch: func(ctx context.Context, _ *http.Client, name string, _ bool) ([]Job, error) {
+		if name == "b" {
+			cancel() // interrupted on b
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		probed = append(probed, name)
+		return []Job{{Title: "Dev"}}, nil
+	}}
+	defer delete(integrations, "fa")
+	dir, args := t.TempDir(), []string{"--sources", "fa", "--delay", "0s", "--boards", "a,b,c"}
+	if err := discoverCmd(ctx, dir, args, io.Discard, io.Discard); err == nil {
+		t.Fatal("interrupted: want error")
+	}
+	other := discoverState{Sources: []string{"fb"}, Todo: []string{"fb:x"}} // another discover's, kept
+	states, _ := loadJSON[[]discoverState](filepath.Join(dir, discoverFile))
+	if len(states) != 1 || !slices.Equal(states[0].Todo, []string{"fa:b", "fa:c"}) {
+		t.Fatalf("states = %v, want todo fa:b, fa:c", states)
+	}
+	if err := saveJSON(filepath.Join(dir, discoverFile), append(states, other)); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveJSON(filepath.Join(dir, suggestionsFile), []Job{{Board: "fb:x", Title: "Ops"}, {Board: "fa:a", Title: "Dev"}}); err != nil {
+		t.Fatal(err) // another discover saved fb:x meanwhile
+	}
+	if err := discoverCmd(context.Background(), dir, args, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(probed, []string{"a", "b", "c"}) {
+		t.Errorf("probed %v, want a, then b and c on resume", probed)
+	}
+	if jobs, _ := loadJSON[[]Job](filepath.Join(dir, suggestionsFile)); len(jobs) != 4 {
+		t.Errorf("stored %v, want fa:a, fa:b, fa:c and the other's fb:x", jobs)
+	}
+	if states, _ := loadJSON[[]discoverState](filepath.Join(dir, discoverFile)); !reflect.DeepEqual(states, []discoverState{other}) {
+		t.Errorf("states = %v, want the other's only", states)
 	}
 }

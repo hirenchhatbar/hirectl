@@ -1,5 +1,8 @@
 bin/
 feeds.json
-jobs.json
+/jobs/
 suggestions.json
+discover.json
+hirectl.lock
 config.json
+jobviews.json

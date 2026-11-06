@@ -14,15 +14,21 @@ type module interface {
 	View() string
 }
 
+// closeMsg asks the app to close the active module and show home; see closeModule.
+type closeMsg struct{}
+
+// closeModule is the cmd a module returns on Esc at its top level.
+func closeModule() tea.Msg { return closeMsg{} }
+
 type slot struct {
 	key, name string // key as tea reports it, e.g. "f2"
 	m         module
 }
 
-// app is the root model: home screen or the active module, plus the function-key bar.
+// app is the root model: the active module, plus the function-key bar. Home is the first module (Feeds).
 type app struct {
 	slots         []slot
-	active        int // index into slots, -1 for home
+	active        int // index into slots
 	width, height int
 }
 
@@ -50,7 +56,7 @@ func logoView(w, h int) string {
 		strings.Join(art, "\n")+"\n\n"+offStyle.Render("v"+version))
 }
 
-func newApp(slots ...slot) app { return app{slots: slots, active: -1} }
+func newApp(slots ...slot) app { return app{slots: slots} }
 
 func (a app) Init() tea.Cmd { return nil }
 
@@ -61,6 +67,9 @@ func (a app) barItems() []slot {
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case closeMsg:
+		a.active = 0
+		return a, nil
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 		return a, a.broadcast(tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - barRows})
@@ -69,12 +78,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 		if a.open(msg.String()) {
-			return a, nil
-		}
-		if a.active < 0 {
-			if msg.String() == "q" {
-				return a, tea.Quit
-			}
 			return a, nil
 		}
 	case tea.MouseClickMsg:
@@ -96,9 +99,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.(type) {
 	case tea.KeyPressMsg, tea.MouseMsg: // input goes to the active module only
-		if a.active < 0 {
-			return a, nil
-		}
 		var cmd tea.Cmd
 		a.slots[a.active].m, cmd = a.slots[a.active].m.Update(msg)
 		return a, cmd
@@ -141,15 +141,12 @@ func (a app) View() tea.View {
 	for _, it := range a.barItems() {
 		key, name, _ := strings.Cut(barLabel(it), " ")
 		style := barStyle
-		if a.active >= 0 && it.key == a.slots[a.active].key {
+		if it.key == a.slots[a.active].key {
 			style = activeStyle
 		}
 		bar = append(bar, fkeyStyle.Render(key)+style.Render(" "+name))
 	}
-	body := logoView(a.width, a.height-barRows)
-	if a.active >= 0 {
-		body = a.slots[a.active].m.View()
-	}
+	body := a.slots[a.active].m.View()
 	line := strings.Repeat(" ", barPad) + strings.Join(bar, barStyle.Render(" "))
 	v.SetContent(body + "\n\n" + barStyle.Width(a.width).Render(ansi.Truncate(line, a.width, "")))
 	return v

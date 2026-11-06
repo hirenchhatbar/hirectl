@@ -13,20 +13,22 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	tea "charm.land/bubbletea/v2"
 )
 
 const (
-	version = "0.0.1"
+	version = "0.0.2"
 )
 
 const usage = `Usage:
   hirectl                                                          open the TUI
   hirectl --version                                                print the version
-  hirectl run      [--feeds a,b]  [--sources s,t] [--delay 1s]  fetch feeds' boards, store new matching jobs
+  hirectl run      [--feeds a,b]  [--sources s,t] [--delay 1s]  fetch feeds' top boards, store new matching jobs
   hirectl discover [--boards a,b] [--sources s,t] [--delay 1s]  find boards, store their jobs as suggestions
   hirectl list     <feeds|jobs|boards|sources>                  print stored feeds, jobs, suggested boards, or sources
+  hirectl cross-check [--sources s,t]                           per source, boards stored vs in the latest Common Crawl
 
 Examples:
   hirectl run                                          all enabled feeds, all sources
@@ -35,6 +37,7 @@ Examples:
   hirectl discover --boards greenhouse:stripe          tries greenhouse:stripe only
   hirectl discover --sources lever --delay 2s          Common Crawl boards on Lever, slower pace
   hirectl list jobs                                    every stored job, one per line
+  hirectl cross-check --sources lever                  Lever boards stored vs online
 
 Run "hirectl <command> --help" for a command's options.
 `
@@ -47,7 +50,7 @@ func main() {
 }
 
 func run() error {
-	cmds := map[string]func(context.Context, string, []string, io.Writer) error{"run": runCmd, "discover": discoverCmd, "list": listCmd}
+	cmds := map[string]func(context.Context, string, []string, io.Writer, io.Writer) error{"run": runCmd, "discover": discoverCmd, "list": listCmd, "cross-check": crossCheckCmd}
 	if len(os.Args) > 1 {
 		switch a := os.Args[1]; {
 		case slices.Contains([]string{"-h", "-help", "--help", "help"}, a):
@@ -65,29 +68,54 @@ func run() error {
 		return err
 	}
 	if len(os.Args) > 1 {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP) // so run and discover save on kill or a closed terminal
 		defer stop()
-		return cmds[os.Args[1]](ctx, dir, os.Args[2:], os.Stdout)
+		return cmds[os.Args[1]](ctx, dir, os.Args[2:], os.Stdout, os.Stderr)
 	}
 	catalog, err := loadJSON[[]Job](filepath.Join(dir, suggestionsFile))
 	if err != nil {
 		return err
 	}
+	cfgPath := filepath.Join(dir, configFile)
 	fk := feedKind
+	fk.blank = func() Feed {
+		cfg, _ := loadJSON[Config](cfgPath) // unreadable config means no default locations
+		return Feed{Enabled: true, Locations: cfg.Locations}
+	}
 	fk.picks = func(v []string) (string, []pick) {
-		f, _ := fk.parse(v) // a feed still being filled in is invalid, yet matches fine
-		return suggest(catalog, f)
+		f, _ := fk.parse(v)                 // a feed still being filled in is invalid, yet matches fine
+		cfg, _ := loadJSON[Config](cfgPath) // unreadable config means the default boards per feed
+		return suggest(catalog, f, cfg.boards())
+	}
+	viewsPath := filepath.Join(dir, jobViewsFile)
+	fk.jobs = func(f Feed) ([]Job, jobView, error) {
+		views, err := loadJSON[map[string]jobView](viewsPath)
+		if err != nil {
+			return nil, jobView{}, err
+		}
+		jobs, err := loadJSON[[]Job](jobFile(dir, f.ID))
+		return jobs, views[f.ID], err
+	}
+	fk.saveView = func(f Feed, v jobView) error {
+		views, err := loadJSON[map[string]jobView](viewsPath)
+		if err != nil {
+			return err
+		}
+		if views == nil {
+			views = map[string]jobView{}
+		}
+		views[f.ID] = v
+		return saveJSON(viewsPath, views)
 	}
 	feeds, err := newSlot("f2", "Feeds", dir, fk)
 	if err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(dir, configFile)
 	cfg, err := loadJSON[Config](cfgPath)
 	if err != nil {
 		return err
 	}
-	conf := configModel{path: cfgPath, cfg: cfg}
+	conf := newConfigModel(cfgPath, cfg)
 	if err := applyTheme(cmp.Or(cfg.Theme, defaultTheme)); err != nil {
 		conf.status = err.Error() // shown on the config page; the theme falls back
 	}

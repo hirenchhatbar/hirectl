@@ -7,32 +7,33 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 )
 
-// Feed is one saved job-post search and the boards it runs on.
+// Feed is one saved job-post search. `hirectl run` fetches its top boards by matching jobs in suggestions.json.
 type Feed struct {
-	ID       string   `json:"id"` // unique slug, e.g. go-remote; names the feed in `hirectl run --feeds` and jobs.json
-	Title    string   `json:"title"`
-	Skills   []string `json:"skills,omitempty"`
-	Location string   `json:"location,omitempty"`
-	Boards   []string `json:"boards"` // integration:company, e.g. greenhouse:stripe
-	Enabled  bool     `json:"enabled"`
+	ID        string   `json:"id"` // unique slug, e.g. go-remote; names the feed in `hirectl run --feeds` and jobs/<id>/
+	Title     string   `json:"title"`
+	Skills    []string `json:"skills,omitempty"`
+	Locations []string `json:"locations,omitempty"` // any one matches, e.g. "Remote India"
+	Sources   []string `json:"sources,omitempty"`   // integrations whose boards run picks from, e.g. greenhouse; none means all
+	Enabled   bool     `json:"enabled"`
 }
 
 var feedKind = kind[Feed]{
 	name:   "Feed",
 	file:   "feeds.json",
-	fields: []string{"Title", "ID", "Skills", "Location", "Boards"},
-	hints:  []string{"Go remote", "go-remote (fills from title)", "Golang, PHP, Laravel", "Remote", "greenhouse:stripe, lever:netflix"},
-	blank:  Feed{Enabled: true},
+	fields: []string{"Title", "ID", "Skills", "Locations", "Sources"},
+	hints:  []string{"Go remote", "go-remote (fills from title)", "Golang, PHP, Laravel", "Remote Worldwide, Remote India, India", "all when blank, e.g. greenhouse, lever"},
+	blank:  func() Feed { return Feed{Enabled: true} },
 	parse: func(v []string) (Feed, error) {
 		f := Feed{
-			Title:    strings.TrimSpace(v[0]),
-			ID:       strings.TrimSpace(v[1]),
-			Skills:   parseList(v[2]),
-			Location: strings.TrimSpace(v[3]),
-			Boards:   parseList(v[4]),
-			Enabled:  true,
+			Title:     strings.TrimSpace(v[0]),
+			ID:        strings.TrimSpace(v[1]),
+			Skills:    parseList(v[2]),
+			Locations: parseList(v[3]),
+			Sources:   parseList(v[4]),
+			Enabled:   true,
 		}
 		if f.ID == "" {
 			f.ID = slug(f.Title)
@@ -54,7 +55,7 @@ func (f Feed) withOn(on bool) Feed {
 
 // values returns f's fields in feedKind.fields order, as the form edits them.
 func (f Feed) values() []string {
-	return []string{f.Title, f.ID, strings.Join(f.Skills, ", "), f.Location, strings.Join(f.Boards, ", ")}
+	return []string{f.Title, f.ID, strings.Join(f.Skills, ", "), strings.Join(f.Locations, ", "), strings.Join(f.Sources, ", ")}
 }
 
 var (
@@ -74,33 +75,55 @@ func (f Feed) validate() error {
 	if !idRe.MatchString(f.ID) {
 		return fmt.Errorf("id %q: want lowercase letters, digits and dashes, e.g. go-remote", f.ID)
 	}
-	if len(f.Boards) == 0 {
-		return errors.New("at least one board is required, e.g. greenhouse:stripe")
-	}
-	for _, b := range f.Boards {
-		name, _, ok := splitBoard(b)
-		if !ok {
-			return fmt.Errorf("board %q: want source:name", b)
-		}
-		if integrations[name] == nil {
-			return fmt.Errorf("board %q: unknown integration, have %s", b, strings.Join(integrationNames(), ", "))
-		}
-	}
-	return nil
+	return checkSources(f.Sources)
 }
 
-// matches reports whether j fits f: f's location within j's, and any of f's skills as a word in j's title
-// or text, or among its techs under any spelling ("Golang" finds Go).
+// matches reports whether j fits f: any of f's locations in j's, and any of f's skills in j (see score).
+// No locations or skills match all.
 func (f Feed) matches(j Job) bool {
-	// shortcut: plain substring location match, upgrade to normalised places if feeds need city/country aliases
-	if !strings.Contains(strings.ToLower(j.Location), strings.ToLower(f.Location)) {
+	if len(f.Locations) > 0 && !slices.ContainsFunc(f.Locations, func(l string) bool { return inLocation(j.Location, l) }) {
 		return false
 	}
-	text := j.Title + "\n" + j.text
-	return len(f.Skills) == 0 || slices.ContainsFunc(f.Skills, func(s string) bool {
-		return hasWord(text, s) || slices.Contains(j.Tech, techName(s))
-	})
+	return len(f.Skills) == 0 || f.score(j) > 0
 }
+
+// score rates how much j is about f's skills, summed over them: 10 for a skill in the title, plus 1 per
+// time it is in the description, up to 5, else 1 for it among the techs discover tagged. A skill counts
+// under any spelling ("Golang" for Go) as a word not followed by "-" ("Go-to-Market" is not Go); in the
+// title in any case, in the description case-sensitive for a tech, so "go" in prose is not Go.
+func (f Feed) score(j Job) int {
+	n := 0
+	for _, s := range f.Skills {
+		name := techName(s)
+		spellings, flags := []string{name}, "(?i)"
+		if i := slices.IndexFunc(techs, func(t []string) bool { return t[0] == name }); i >= 0 {
+			spellings, flags = techs[i], ""
+		}
+		if slices.ContainsFunc(spellings, func(w string) bool { return wordRe("(?i)", w, techEnd).MatchString(j.Title) }) {
+			n += 10
+		}
+		hits := 0
+		for _, w := range spellings {
+			hits += len(wordRe(flags, w, techEnd).FindAllStringIndex(j.text, 5))
+		}
+		switch {
+		case hits > 0:
+			n += min(hits, 5)
+		case slices.Contains(j.Tech, name):
+			n++
+		}
+	}
+	return n
+}
+
+// inLocation reports whether every word of want is a word of loc, in any order, ignoring case and
+// punctuation: "Remote India" is in "Bangalore, India - Remote", "India" is not in "Indiana".
+// shortcut: words only, no place aliases; a feed lists cities itself, e.g. "India, Bangalore, Mumbai"
+func inLocation(loc, want string) bool {
+	return !slices.ContainsFunc(strings.FieldsFunc(want, isSep), func(w string) bool { return !hasWord(loc, w) })
+}
+
+func isSep(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }
 
 // wordRes caches wordRe's patterns, as suggestions match every stored job.
 var wordRes sync.Map

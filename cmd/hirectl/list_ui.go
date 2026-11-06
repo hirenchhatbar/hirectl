@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -26,6 +27,7 @@ const (
 	modeView               // right pane shows the selected item read-only
 	modeForm               // right pane edits an item
 	modeDelete             // right pane asks to confirm a delete
+	modeJobs               // right pane lists the selected item's jobs
 )
 
 // record is an item a list module manages, such as Feed.
@@ -39,11 +41,10 @@ type record[T any] interface {
 
 // pick is a value the form offers as a checkbox for its last field, a comma list.
 type pick struct {
-	value  string // e.g. greenhouse:stripe
-	note   string // column after value, e.g. "4 of 120 jobs"
+	value  string // e.g. greenhouse
+	note   string // column after value, e.g. "4 boards, 12 jobs"
 	tags   string // last column, e.g. "Go, Java"
 	detail string // shown under the list while this pick is selected
-	on     bool   // checked when the checklist opens on an empty last field
 }
 
 // kind describes one record type to the list module.
@@ -52,11 +53,13 @@ type kind[T record[T]] struct {
 	file       string // JSON file in dataDir
 	fields     []string
 	hints      []string                        // input placeholders, by field
-	blank      T                               // defaults for a new item
+	blank      func() T                        // defaults for a new item
 	parse      func([]string) (T, error)       // form values to a validated item
 	picks      func([]string) (string, []pick) // optional: checklist heading and picks for the last field, from the form values
 	derive     func([]string)                  // optional: sets form fields computed from others, e.g. feed ID from title
 	deriveHint string                          // ctrl+g key hint for derive, e.g. "ID from title"
+	jobs       func(T) ([]Job, jobView, error) // optional: an item's jobs, listed by o in the right pane, and its saved jobView
+	saveView   func(T, jobView) error          // optional: saves an item's jobView as the jobs pane changes it
 }
 
 // listModel is a module: items in a sidebar, right pane for logo/view/form/delete.
@@ -69,11 +72,12 @@ type listModel[T record[T]] struct {
 	mode          mode
 	editing       int // item index being edited, -1 for a new item
 	inputs        []textinput.Model
-	focus         int    // input index, or len(inputs) for the picks checklist
-	picks         []pick // loaded when the checklist gets focus
-	picksHead     string // heading of picks
-	pickAt        int    // selected pick
-	status        string // error shown in the bottom bar until the next key
+	focus         int      // input index, or len(inputs) for the picks checklist
+	picks         []pick   // loaded when the checklist gets focus
+	picksHead     string   // heading of picks
+	pickAt        int      // selected pick
+	jobs          jobsPane // shown in modeJobs
+	status        string   // error shown in the bottom bar until the next key
 	width, height int
 }
 
@@ -87,6 +91,9 @@ func newListModel[T record[T]](k kind[T], path string, items []T) listModel[T] {
 	}
 	return m
 }
+
+// jobsSize is the width and height inside the right pane's border, where the jobs pane goes.
+func (m listModel[T]) jobsSize() (int, int) { return max(m.width-sidebarWidth, 20) - 2, m.height - 3 }
 
 // listFocused reports whether keys and clicks drive the sidebar.
 func (m listModel[T]) listFocused() bool { return m.mode == modeLogo || m.mode == modeView }
@@ -112,9 +119,11 @@ func (m *listModel[T]) move(to int) {
 
 func (m *listModel[T]) openForm(index int) tea.Cmd {
 	m.mode, m.editing, m.focus, m.picks = modeForm, index, 0, nil
-	it := m.kind.blank
+	var it T
 	if index >= 0 {
 		it = m.items[index]
+	} else {
+		it = m.kind.blank()
 	}
 	for i, v := range it.values() {
 		m.inputs[i].SetValue(v)
@@ -146,15 +155,6 @@ func (m *listModel[T]) focusField(i int) tea.Cmd {
 	if m.onPicks() { // reload, as the other fields may have changed
 		m.picksHead, m.picks = m.kind.picks(m.formValues())
 		m.pickAt = 0
-		if last := &m.inputs[len(m.inputs)-1]; last.Value() == "" {
-			var on []string
-			for _, p := range m.picks {
-				if p.on {
-					on = append(on, p.value)
-				}
-			}
-			last.SetValue(strings.Join(on, ", "))
-		}
 		return nil
 	}
 	return m.inputs[m.focus].Focus()
@@ -216,6 +216,7 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 			m.inputs[i].SetWidth(max(m.width-sidebarWidth-14, 10))
 		}
 		m.move(m.cursor)
+		m.jobs.resize(m.jobsSize())
 		return m, nil
 	case tea.KeyPressMsg:
 		m.status = ""
@@ -230,11 +231,37 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 			}
 			m.mode = modeLogo
 			return m, nil
+		case modeJobs:
+			if msg.String() == "esc" && !m.jobs.busy() {
+				m.mode = modeView
+				return m, nil
+			}
+			var cmd tea.Cmd
+			var err error
+			if m.jobs, cmd, err = m.jobs.update(msg); err != nil {
+				m.status = err.Error()
+			}
+			if v := m.jobs.settings(); m.kind.saveView != nil && !m.jobs.busy() && !reflect.DeepEqual(v, m.jobs.saved) {
+				if err := m.kind.saveView(m.items[m.cursor], v); err != nil {
+					m.status = "save failed: " + err.Error()
+				} else {
+					m.jobs.saved = v
+				}
+			}
+			return m, cmd
 		}
 		return m.updateList(msg)
 	case tea.MouseClickMsg:
 		return m.click(msg)
 	case tea.MouseWheelMsg:
+		if m.mode == modeJobs {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.jobs.move(m.jobs.cursor - 1)
+			case tea.MouseWheelDown:
+				m.jobs.move(m.jobs.cursor + 1)
+			}
+		}
 		if m.listFocused() {
 			switch msg.Button {
 			case tea.MouseWheelUp:
@@ -244,6 +271,11 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+	if m.mode == modeJobs {
+		var cmd tea.Cmd
+		m.jobs, cmd = m.jobs.tick(msg)
+		return m, cmd
 	}
 	if m.mode == modeForm && !m.onPicks() { // cursor blink and other input messages
 		var cmd tea.Cmd
@@ -271,8 +303,10 @@ func (m listModel[T]) updateList(msg tea.KeyPressMsg) (module, tea.Cmd) {
 		if len(m.items) > 0 {
 			m.mode = modeView
 		}
-	case "h", "left", "esc":
+	case "h", "left":
 		m.mode = modeLogo
+	case "esc":
+		return m, closeModule
 	case "e":
 		if len(m.items) > 0 {
 			return m, m.openForm(m.cursor)
@@ -286,6 +320,16 @@ func (m listModel[T]) updateList(msg tea.KeyPressMsg) (module, tea.Cmd) {
 	case "d":
 		if len(m.items) > 0 {
 			m.mode = modeDelete
+		}
+	case "o":
+		if m.kind.jobs != nil && len(m.items) > 0 {
+			jobs, view, err := m.kind.jobs(m.items[m.cursor])
+			if err != nil {
+				m.status = err.Error()
+				return m, nil
+			}
+			w, h := m.jobsSize()
+			m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, w, h), modeJobs
 		}
 	}
 	return m, nil
@@ -452,14 +496,22 @@ func (m listModel[T]) View() string {
 			lines = append(lines, fmt.Sprintf(labelFmt, names[i])+v)
 		}
 		body = strings.Join(lines, "\n")
-		keys = "e edit  space on/off  d delete  j/k move  esc/← back  q quit"
+		keys = "e edit  space on/off  d delete  j/k move  ← back  esc home  q quit"
+		if m.kind.jobs != nil {
+			keys = "o jobs  " + keys
+		}
 	case modeDelete:
 		body = lipgloss.Place(inner, h-2, lipgloss.Center, lipgloss.Center,
 			fmt.Sprintf("Delete %q?  y/n", m.items[m.cursor].label()))
 		keys = "y delete  any other key cancel"
+	case modeJobs:
+		body, keys = m.jobs.view()
 	default:
 		body = logoView(inner, h-2)
-		keys = "j/k move  →/enter view  a add  e edit  space on/off  d delete  q quit"
+		keys = "j/k move  →/enter view  a add  e edit  space on/off  d delete  esc home  q quit"
+		if m.kind.jobs != nil {
+			keys = "o jobs  " + keys
+		}
 	}
 	right := paneStyle.Width(rightW).Height(h).Render(body)
 
@@ -474,11 +526,11 @@ func (m listModel[T]) View() string {
 // keep the selection in view, then the selected pick's detail.
 func (m listModel[T]) picksView(width, rows int) []string {
 	if !m.onPicks() {
-		return []string{headStyle.Render("Suggested boards") + offStyle.Render("  tab from Location to review")}
+		return []string{headStyle.Render("Sources") + offStyle.Render("  tab from Locations to choose")}
 	}
 	lines := []string{ansi.Truncate(headStyle.Render(m.picksHead), width, "…")}
 	if len(m.picks) == 0 {
-		return append(lines, offStyle.Render("No discovered boards. Run hirectl discover."))
+		return lines
 	}
 	valW, noteW := 0, 0
 	for _, p := range m.picks {

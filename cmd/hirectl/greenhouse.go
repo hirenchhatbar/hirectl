@@ -20,7 +20,8 @@ func fetchGreenhouse(ctx context.Context, client *http.Client, company string, t
 			Location    struct {
 				Name string `json:"name"`
 			} `json:"location"`
-			Content string `json:"content"` // entity-escaped HTML
+			Content        string `json:"content"` // entity-escaped HTML
+			FirstPublished string `json:"first_published"`
 		} `json:"jobs"`
 	}
 	u := "https://boards-api.greenhouse.io/v1/boards/" + url.PathEscape(company) + "/jobs"
@@ -32,7 +33,7 @@ func fetchGreenhouse(ctx context.Context, client *http.Client, company string, t
 	}
 	jobs := make([]Job, 0, len(body.Jobs))
 	for _, j := range body.Jobs {
-		jobs = append(jobs, Job{Title: j.Title, Location: j.Location.Name, URL: j.AbsoluteURL, text: html.UnescapeString(j.Content)})
+		jobs = append(jobs, Job{Title: j.Title, Location: j.Location.Name, URL: j.AbsoluteURL, Posted: posted(j.FirstPublished), text: html.UnescapeString(j.Content)})
 	}
 	return jobs, nil
 }

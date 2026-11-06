@@ -36,8 +36,11 @@ func techIn(text string) []string {
 	return found
 }
 
+// techEnd ends a tech spelling: a word not followed by "-".
+const techEnd = `($|[^\pL\pN-])`
+
 // techRe matches spelling s as a word not followed by "-".
-func techRe(s string) *regexp.Regexp { return wordRe("", s, `($|[^\pL\pN-])`) }
+func techRe(s string) *regexp.Regexp { return wordRe("", s, techEnd) }
 
 // techName returns the tech name for any of its spellings, case-insensitive, e.g. "golang" is "Go";
 // a word not in techs is returned as is.
