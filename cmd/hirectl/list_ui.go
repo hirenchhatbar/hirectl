@@ -78,13 +78,13 @@ type listModel[T record[T]] struct {
 	mode          mode
 	editing       int // item index being edited, -1 for a new item
 	inputs        []textinput.Model
-	focus         int            // input index, or len(inputs) for the picks checklist
-	picks         []pick         // loaded when the checklist gets focus
-	picksHead     string         // heading of picks
-	pickAt        int            // selected pick
-	jobs          jobsPane       // shown in modeJobs
-	counts        map[string]int // stored jobs per item key, shown in the sidebar; nil without kind.jobs
-	status        string         // error shown in the bottom bar until the next key
+	focus         int               // input index, or len(inputs) for the picks checklist
+	picks         []pick            // loaded when the checklist gets focus
+	picksHead     string            // heading of picks
+	pickAt        int               // selected pick
+	jobs          jobsPane          // shown in modeJobs
+	counts        map[string][2]int // jobs per item key, after its saved filters and stored, shown in the sidebar; nil without kind.jobs
+	status        string            // error shown in the bottom bar until the next key
 	width, height int
 }
 
@@ -100,15 +100,20 @@ func newListModel[T record[T]](k kind[T], path string, items []T) listModel[T] {
 	return m
 }
 
-// countJobs reloads each item's stored job count; an item whose jobs fail to load shows none.
+// countJobs reloads each item's job counts, after its saved filters and stored; an item whose jobs fail to
+// load shows none. Thumbs failing to load count as none.
 func (m *listModel[T]) countJobs() {
 	if m.kind.jobs == nil {
 		return
 	}
-	m.counts = map[string]int{}
+	var likes map[string]string
+	if m.kind.likes != nil {
+		likes, _ = m.kind.likes()
+	}
+	m.counts = map[string][2]int{}
 	for _, it := range m.items {
-		if jobs, _, err := m.kind.jobs(it); err == nil {
-			m.counts[it.key()] = len(jobs)
+		if jobs, view, err := m.kind.jobs(it); err == nil {
+			m.counts[it.key()] = newJobsPane("", jobs, view, likes, 0, 0).count()
 		}
 	}
 }
@@ -161,9 +166,9 @@ func (m *listModel[T]) openJobs() {
 			return
 		}
 	}
-	m.counts[m.items[m.cursor].key()] = len(jobs)
 	w, h := m.jobsSize()
 	m.jobs, m.mode = newJobsPane(m.items[m.cursor].label(), jobs, view, likes, w, h), modeJobs
+	m.counts[m.items[m.cursor].key()] = m.jobs.count()
 	m.jobs.rate = m.kind.saveLike
 }
 
@@ -336,6 +341,7 @@ func (m listModel[T]) Update(msg tea.Msg) (module, tea.Cmd) {
 			if m.jobs, cmd, err = m.jobs.update(msg); err != nil {
 				m.status = err.Error()
 			}
+			m.counts[m.items[m.cursor].key()] = m.jobs.count()
 			if v := m.jobs.settings(); m.kind.saveView != nil && !m.jobs.busy() && !reflect.DeepEqual(v, m.jobs.saved) {
 				if err := m.kind.saveView(m.items[m.cursor], v); err != nil {
 					m.status = "save failed: " + err.Error()
@@ -599,7 +605,7 @@ func (m listModel[T]) sidebar() string {
 		}
 		title := cell(box+it.label(), sidebarWidth-2)
 		if n, ok := m.counts[it.key()]; ok {
-			c := strconv.Itoa(n)
+			c := strconv.Itoa(n[0]) + "/" + strconv.Itoa(n[1])
 			title = cell(box+it.label(), sidebarWidth-3-len(c)) + " " + c
 		}
 		lines := []string{title}

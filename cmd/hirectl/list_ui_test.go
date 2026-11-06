@@ -131,6 +131,18 @@ func TestSidebarFeedRows(t *testing.T) {
 	}
 }
 
+func TestSidebarFilteredCount(t *testing.T) {
+	k := feedKind
+	k.jobs = func(Feed) ([]Job, jobView, error) {
+		return []Job{{Board: "lever:a", Title: "Go Dev", URL: "u1"}, {Board: "lever:a", Title: "Rust Dev", URL: "u2"}}, jobView{Search: "rust"}, nil
+	}
+	var m module = newListModel(k, "", []Feed{{ID: "a", Title: "A"}})
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	if view := m.View(); !strings.Contains(view, "1/2") {
+		t.Fatalf("sidebar lacks filtered/total count 1/2:\n%s", view)
+	}
+}
+
 func TestListRefresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "feeds.json")
 	k := feedKind
@@ -145,7 +157,7 @@ func TestListRefresh(t *testing.T) {
 	jobs = append(jobs, Job{Board: "lever:a", Title: "Rust Dev", URL: "u2"})
 	m, _ = m.Update(refreshMsg{})
 	lm := m.(listModel[Feed])
-	if len(lm.items) != 2 || lm.cursor != 1 || lm.mode != modeJobs || len(lm.jobs.all) != 2 || lm.counts["a"] != 2 {
+	if len(lm.items) != 2 || lm.cursor != 1 || lm.mode != modeJobs || len(lm.jobs.all) != 2 || lm.counts["a"] != [2]int{2, 2} {
 		t.Fatalf("items %v, cursor %d, mode %d, jobs %d, counts %v; want feed a kept selected with 2 jobs", lm.items, lm.cursor, lm.mode, len(lm.jobs.all), lm.counts)
 	}
 	if err := saveJSON(path, []Feed{{ID: "b", Title: "B"}}); err != nil {

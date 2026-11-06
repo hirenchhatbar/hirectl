@@ -71,7 +71,7 @@ func TestJobsPane(t *testing.T) {
 		}
 		return strings.Join(got, ", ")
 	}
-	if !strings.Contains(ansi.Strip(m.View()), " 3│") {
+	if !strings.Contains(ansi.Strip(m.View()), " 3/3│") {
 		t.Fatalf("sidebar lacks the job count:\n%s", m.View())
 	}
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})

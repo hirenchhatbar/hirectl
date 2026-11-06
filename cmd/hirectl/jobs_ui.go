@@ -242,6 +242,9 @@ func fuzzy(query []string, text string) (score int, ok bool) {
 	return score, true
 }
 
+// count is how many jobs the filters show and how many there are.
+func (p jobsPane) count() [2]int { return [2]int{len(p.shown), len(p.all)} }
+
 // busy reports whether an input, the sources checklist or the snapshot has the keys, so esc is the pane's own.
 func (p jobsPane) busy() bool { return p.typing >= 0 || p.picking || p.snap != "" }
 
